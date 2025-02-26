@@ -1,0 +1,424 @@
+---
+title: "miRNA preprocessing and clustering"
+author: "Hildana Shiferaw"
+format: html
+editor: visual
+---
+
+```{r}
+#install.packages(c("tidyverse", "DESeq2", "umap"))
+library(tidyverse)
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+BiocManager::install("Biobase")  
+library(Biobase)
+library(umap)
+library(consensusOV)
+library(TCGAbiolinks)
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+library(factoextra)
+```
+
+```{r}
+#subset_dir <- "/Users/hshiferaw/Documents/Thesis Folder - Hildana/Subset _TCGA-data_10:10:24_RNAandmiRNA"
+full_dir <- "/Users/hshiferaw/Documents/Thesis Folder - Hildana/TCGA-data_10:10:24_RNAandmiRNA"
+txt_files <- list.files(full_dir, pattern = "\\.txt$", recursive = TRUE, full.names = TRUE)
+mirna_files <- txt_files[grepl("mirna", txt_files)]
+```
+
+```{r}
+#step 1 -- load miRNA data
+mirna_list <- list()
+for (file in mirna_files) {
+  temp_data <- read.delim(file, header = TRUE, sep = "\t", comment.char = "#") # confirm that we have the column we need 
+  if (!all(c("miRNA_ID", "read_count") %in% colnames(temp_data))) {
+    cat("Skipping file, missing columns:", file, "\n")
+    next
+  }
+  
+  temp_data <- temp_data[, c("miRNA_ID", "read_count")] #select the columns we need
+  
+  sample_name <- basename(file) #rename column
+  colnames(temp_data)[2] <- sample_name
+  mirna_list[[sample_name]] <- temp_data #store data
+}
+mirna_expression_combined <- Reduce(function(x, y) merge(x, y, by = "miRNA_ID", all = TRUE), mirna_list) # merge to combined expression matrix
+mirna_expression_combined[is.na(mirna_expression_combined)] <- 0 # any NA to 0, representing missing value
+```
+
+Transposing the data (patients as rows and miRNAs as columns)
+
+```{r}
+#write.csv(mirna_expression_combined,"~/Downloads/mirna_expression_combined.csv", row.names = FALSE)
+miRNA_ids <- mirna_expression_combined$miRNA_ID
+miRNA_data_numeric <- mirna_expression_combined[, -1]
+miRNA_data_t <- as.data.frame(t(miRNA_data_numeric))
+colnames(miRNA_data_t) <- miRNA_ids
+rownames(miRNA_data_t) <- rownames(t(miRNA_data_numeric))
+head(miRNA_data_t)
+```
+
+##SUM
+
+```{r}
+miRNA_sums <- apply(miRNA_data_t, 2, sum, na.rm = TRUE)
+miRNA_sums_df <- data.frame(miRNA_ID = names(miRNA_sums), Expression_Sum = miRNA_sums)
+miRNA_sums_zero <- miRNA_sums_df |>
+  filter(Expression_Sum < 1) #321 miRNAs are zero, this makes sense because they all have 1881 miRNA (there are nearly 2,800 human miRNAs but I am not sure why we are only using 1881) 
+
+#filter out non-zero miRNA sums
+miRNA_sums_nonzero <- miRNA_sums_df |>
+  filter(Expression_Sum >= 1) #1560 miRNAs are non-zero Mean square error, SD, RMSD, metrics for error 
+```
+
+```{r}
+##1. #plot sums
+library(ggplot2)
+ggplot(miRNA_sums_nonzero, aes(x = Expression_Sum)) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  labs(title = "Histogram of SUM miRNA Expression Levels",
+       x = "SUM Expression Level",
+       y = "Frequency") +
+  theme_minimal()
+
+
+###2 #plot histogram of the log-transformed sum 
+ggplot(miRNA_sums_nonzero, aes(x = log(Expression_Sum))) +
+  geom_histogram(bins = 30, fill = "lightgreen", color = "black") +
+  labs(title = "Histogram of SUM miRNA Log Expression Levels",
+       x = "SUM Expression)",
+       y = "Frequency") +
+  theme_minimal()
+
+###3 #plot density plot of the log-transformed sum 
+ggplot(miRNA_sums_nonzero, aes(x = log(Expression_Sum))) +
+  geom_density(fill = "pink", color = "black", alpha = 0.6) +
+  labs(title = "Density Plot of SUM miRNA Log Expression Levels",
+       x = "log(Expression_Sum)",
+       y = "Density") +
+  theme_minimal()
+```
+
+```{r}
+
+###3 #sort and plot 
+top_miRNAs_sum <- miRNA_sums_nonzero %>%
+  arrange(desc(Expression_Sum)) %>%
+  head(10)  
+
+ggplot(top_miRNAs_sum, aes(x = reorder(miRNA_ID, Expression_Sum), y = Expression_Sum)) +
+  geom_point(size = 3) +  # Increase point size for better visibility
+  #scale_y_continuous(trans = 'log') +  # Log-transform y-axis to handle high range
+  labs(title = "Visualizing miRNAs by SUM Expression Level",
+       x = "miRNA_ID",
+       y = "SUM Expression Level") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#filter miRNAs identified as non-zero in the original data
+nonzero_miRNAs <- miRNA_sums_nonzero$miRNA_ID
+
+filtered_mirna_expression_combined <- mirna_expression_combined %>%
+  filter(miRNA_ID %in% nonzero_miRNAs)
+
+for (patient in colnames(filtered_mirna_expression_combined)[-1]) { # exclude the miRNA_ID column
+  output_file <- paste0(full_dir, "/filtered_", patient, ".txt")
+  write.table(filtered_mirna_expression_combined[, c("miRNA_ID", patient)], file = output_file, sep = "\t", row.names = FALSE, quote = FALSE)
+}
+
+```
+
+```{r}
+#miRNA_data_t_com_nor is Transposing combined data and converting to df 
+miRNA_ids_com <- filtered_mirna_expression_combined$miRNA_ID
+miRNA_data_numeric_com <- filtered_mirna_expression_combined[, -1]
+miRNA_data_t_com_nor <- as.data.frame(t(miRNA_data_numeric_com))
+colnames(miRNA_data_t_com_nor) <- miRNA_ids_com
+rownames(miRNA_data_t_com_nor) <- rownames(t(miRNA_data_numeric_com))
+
+#dataframe 
+miRNA_data_t_com_nor_df <- as.data.frame(miRNA_data_t_com_nor)
+
+
+perform_pca <- function(data, scale_data = TRUE) {
+  pca_result <- prcomp(data, center = TRUE, scale. = scale_data)
+  return(pca_result)
+}
+
+miRNA_data_pca4 <- perform_pca(miRNA_data_t_com_nor_df)
+fviz_eig(miRNA_data_pca4, addlabels = TRUE, ylim = c(0, 50),
+         main = "") 
+
+```
+
+```{r}
+library(GGally)
+
+#create a data frame of the first 5 principal components
+pca_pairwise_data <- as.data.frame(miRNA_data_pca4$x[, 1:5])
+colnames(pca_pairwise_data) <- paste0("PC", 1:5)
+
+#pairwise plot of the first 5 principal components
+ggpairs(pca_pairwise_data,
+        title = "Pairwise Plots of Principal Components 1-5")
+   
+```
+
+```{r}
+explained_variance <- cumsum(miRNA_data_pca4$sdev^2 / sum(miRNA_data_pca4$sdev^2)) * 100
+
+# Plot the cumulative variance explained by the principal components
+plot(1:length(explained_variance), explained_variance, type = "b", pch = 19,
+     xlab = "Number of Principal Components",
+     ylab = "Cumulative Variance Explained (%)",
+     main = "Cumulative Variance Explained by Principal Components")
+abline(h = 80, col = "red", lty = 2)  
+
+
+```
+
+```{r}
+# Function to visualize PCA projection
+visualize_pca <- function(pca_result, title = "PCA of miRNA Expression Data") {
+  fviz_pca_ind(pca_result,
+               geom.ind = "point", # Show points only (no labels)
+               pointshape = 21,
+               pointsize = 2,
+               fill = "blue",
+               repel = TRUE, # Avoid overlapping of labels
+               title = title)
+}
+
+visualize_pca(miRNA_data_pca4)
+```
+
+```{r}
+library(plotly)
+
+pca_3d_data <- as.data.frame(miRNA_data_pca4$x[, 1:3])
+colnames(pca_3d_data) <- c("PC1", "PC2", "PC3")
+
+plot_ly(data = pca_3d_data, x = ~PC1, y = ~PC2, z = ~PC3, type = "scatter3d", mode = "markers",
+        marker = list(size = 4, color = "blue")) %>%
+  layout(title = "3D PCA of miRNA Expression Data",
+         scene = list(xaxis = list(title = "PC1"),
+                      yaxis = list(title = "PC2"),
+                      zaxis = list(title = "PC3")))
+```
+
+```{r}
+set.seed(123)
+number_of_clusters <- 4  
+kmeans_result <- kmeans(miRNA_data_t_com_nor, centers = number_of_clusters, nstart = 25)
+#kmeans_result <- kmeans(filtered_miRNA_data_by_hybrid, centers = number_of_clusters, nstart = 25)
+
+#visualize the clusters
+pca_data <- as.data.frame(miRNA_data_pca4$x) 
+pca_data$Cluster <- as.factor(kmeans_result$cluster)
+
+ggplot(pca_data, aes(x = PC1, y = PC2, color = Cluster)) +
+  geom_point(size = 3, alpha = 0.7) +
+  labs(title = "PCA of miRNA Expression Data with K-means Clusters",
+       x = "Principal Component 1",
+       y = "Principal Component 2") +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+```
+
+```{r}
+library(plotly)
+
+#a data frame with the first three principal components
+pca_data_3d <- as.data.frame(miRNA_data_pca4$x[, 1:4])
+pca_data_3d$Cluster <- as.factor(kmeans_result$cluster)
+
+#3D scatter plot
+plot_ly(data = pca_data_3d, x = ~PC2, y = ~PC3, z = ~PC4, color = ~Cluster, colors = "Set1",
+        type = "scatter3d", mode = "markers", marker = list(size = 4)) %>%
+  layout(title = "",
+         scene = list(xaxis = list(title = "PC1"),
+                      yaxis = list(title = "PC2"),
+                      zaxis = list(title = "PC3")))
+```
+
+**Hybrid filtering -- high mean and high variability first, visualize for cutoff**
+
+```{r}
+#variance for each miRNA
+miRNA_variances <- apply(miRNA_data_t, 2, var)
+sorted_variances <- sort(miRNA_variances, decreasing = TRUE)
+
+plot(sorted_variances, type = "b", main = "Elbow Plot of miRNA Variance",
+     xlab = "miRNA Index (sorted by variance)", ylab = "Variance")
+
+```
+
+```{r}
+#mean cutoff
+miRNA_means_a <- apply(miRNA_data_t, 2, mean)
+sorted_means <- sort(miRNA_means_a, decreasing = TRUE)
+
+#elbow point plot
+plot(sorted_means, type = "b", main = "Elbow Plot of miRNA Mean Expression",
+     xlab = "miRNA Index (sorted by mean expression)", ylab = "Mean Expression")
+
+```
+
+```{r}
+#variance and mean for each miRNA
+miRNA_variances_one <- apply(miRNA_data_t, 2, var)
+miRNA_means_two <- apply(miRNA_data_t, 2, mean)
+
+top_n_variance <- 150  #based on the elbow plots above
+top_miRNAs_variance <- names(sort(miRNA_variances_one, decreasing = TRUE))[1:top_n_variance]
+
+top_n_mean <- 20  
+top_miRNAs_mean <- names(sort(miRNA_means_two, decreasing = TRUE))[1:top_n_mean]
+
+selected_miRNAs_by_hybrid <- union(top_miRNAs_variance, top_miRNAs_mean)
+
+filtered_miRNA_data_by_hybrid <- miRNA_data_t[, selected_miRNAs_by_hybrid] 
+filtered_miRNA_data_by_hybrid_df <- as.data.frame(filtered_miRNA_data_by_hybrid)
+```
+
+```{r}
+##for the the ~1500 x 497 data -- just this cell
+# Install and load the NMF package (install using Bioconductor if necessary)
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+    #install.packages("BiocManager")
+BiocManager::install("NMF")
+library(NMF)
+
+set.seed(42) 
+k_range <- 2:8
+nmf_result <- nmf(miRNA_data_t_com_nor, rank = k_range, method = "brunet", nrun = 50, .opt = "v-p")
+
+#plot
+consensusmap(nmf_result, main = "Consensus NMF Clustering")a
+
+```
+
+Clustering with Consensus NMF
+
+```{r}
+# Install and load the NMF package (install using Bioconductor if necessary)
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+    #install.packages("BiocManager")
+BiocManager::install("NMF")
+library(NMF)
+
+set.seed(42) 
+k_range <- 2:8
+nmf_result <- nmf(filtered_miRNA_data_by_hybrid, rank = k_range, method = "brunet", nrun = 50, .opt = "v-p")
+
+#plot
+consensusmap(nmf_result, main = "Consensus NMF Clustering")
+
+#best_rank <- nmf_rank(nmf_result)
+#cat("Optimal number of clusters:", best_rank, "\n")
+
+```
+
+**Extract cluster assignment**
+
+```{r}
+#extract cluster assignments for optimal rank 
+library(NMF)
+set.seed(42) 
+k <- 2:8
+nmf_result <- nmf(filtered_miRNA_data_by_hybrid, rank = k, method = "brunet")  # Run NMF
+basis_matrix <- basis(nmf_result)  # Extract basis matrix (W)
+
+optimal_rank <- 4
+nmf_fit <- nmf_result$fit[[optimal_rank]]
+
+#basis_matrix <- basis(nmf_fit)
+basis_matrix <- basis_matrix[, 1:optimal_rank]
+cluster_assignments <- apply(basis_matrix, 1, which.max)
+
+filtered_miRNA_data_by_hybrid$Cluster <- factor(cluster_assignments)
+cat("Basis matrix dimensions:", dim(basis_matrix), "\n")
+
+cat("Unique cluster assignments:", unique(cluster_assignments), "\n")
+
+```
+
+Clustering with Gaussian Mixture Models (GMM) Unlike k-means, which assigns points to clusters in a hard manner (strictly one cluster), GMM provides soft assignments.
+
+```{r}
+library(mclust)
+set.seed(42)  
+gmm_results <- Mclust(filtered_miRNA_data_by_hybrid, G = 2:4)
+#gmm_results <- Mclust(filtered_miRNA_data_by_hybrid)
+
+cat("Optimal number of clusters (GMM):", gmm_results$G, "\n")
+
+
+cluster_assignments <- gmm_results$classification
+```
+
+Evaluating Clustering with Silhouette Analysis
+
+```{r}
+library(cluster)
+
+#silhouette scores for the GMM clustering
+dist_matrix <- dist(filtered_miRNA_data_by_hybrid)  # Calculate distance matrix
+silhouette_results <- silhouette(cluster_assignments, dist_matrix)
+
+#plot
+plot(silhouette_results, main = "Silhouette Plot for GMM Clustering")
+
+```
+
+PCA
+
+```{r}
+miRNA_data_pca5 <- perform_pca(filtered_miRNA_data_by_hybrid_df)
+fviz_eig(miRNA_data_pca5, addlabels = TRUE, ylim = c(0, 50),
+         main = "")
+```
+
+```{r}
+set.seed(123)
+number_of_clusters <- 4  
+kmeans_result <- kmeans(filtered_miRNA_data_by_hybrid, centers = number_of_clusters, nstart = 25)
+#kmeans_result <- kmeans(filtered_miRNA_data_by_hybrid, centers = number_of_clusters, nstart = 25)
+
+#visualize
+pca_data <- as.data.frame(miRNA_data_pca5$x) 
+pca_data$Cluster <- as.factor(kmeans_result$cluster)
+
+ggplot(pca_data, aes(x = PC1, y = PC2, color = Cluster)) +
+  geom_point(size = 3, alpha = 0.7) +
+  labs(title = "PCA of miRNA Expression Data with K-means Clusters",
+       x = "Principal Component 1",
+       y = "Principal Component 2") +
+  theme_minimal() +
+  theme(legend.position = "right")
+```
+
+```{r}
+#a data frame with the first three principal components
+pca_data_3d <- as.data.frame(miRNA_data_pca5$x[, 1:4])
+pca_data_3d$Cluster <- as.factor(kmeans_result$cluster)
+
+#3D 
+plot_ly(data = pca_data_3d, x = ~PC1, y = ~PC2, z = ~PC3, color = ~Cluster, colors = "Set1",
+        type = "scatter3d", mode = "markers", marker = list(size = 4)) %>%
+  layout(title = "",
+         scene = list(xaxis = list(title = "PC1"),
+                      yaxis = list(title = "PC2"),
+                      zaxis = list(title = "PC3")))
+```
+
+quantifying the best cluster: when people use nmf what do they use to select the number of cluster. Look what are people are doinfd with mirna
+
+what do they do after that.
+
+in PCA is called loading. in NMF.

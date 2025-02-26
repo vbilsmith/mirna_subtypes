@@ -1,0 +1,938 @@
+---
+title: "miRNA preprocessing and clustering"
+author: "Hildana Shiferaw"
+format: html
+editor: visual
+---
+
+```{r}
+#install.packages(c("tidyverse", "DESeq2", "umap"))
+library(tidyverse)
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+BiocManager::install("Biobase")  
+library(Biobase)
+library(umap)
+library(consensusOV)
+library(TCGAbiolinks)
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+library(factoextra)
+```
+
+```{r}
+#subset_dir <- "/Users/hshiferaw/Documents/Thesis Folder - Hildana/Subset _TCGA-data_10:10:24_RNAandmiRNA"
+full_dir <- "/Users/hshiferaw/Documents/Thesis Folder - Hildana/TCGA-data_10:10:24_RNAandmiRNA"
+txt_files <- list.files(full_dir, pattern = "\\.txt$", recursive = TRUE, full.names = TRUE)
+mirna_files <- txt_files[grepl("mirna", txt_files)]
+```
+
+```{r}
+#step 1 -- load miRNA data
+mirna_list <- list()
+for (file in mirna_files) {
+  temp_data <- read.delim(file, header = TRUE, sep = "\t", comment.char = "#") # confirm that we have the column we need 
+  if (!all(c("miRNA_ID", "read_count") %in% colnames(temp_data))) {
+    cat("Skipping file, missing columns:", file, "\n")
+    next
+  }
+  
+  temp_data <- temp_data[, c("miRNA_ID", "read_count")] #select the columns we need
+  
+  sample_name <- basename(file) #rename column
+  colnames(temp_data)[2] <- sample_name
+  mirna_list[[sample_name]] <- temp_data #store data
+}
+mirna_expression_combined <- Reduce(function(x, y) merge(x, y, by = "miRNA_ID", all = TRUE), mirna_list) # merge to combined expression matrix
+mirna_expression_combined[is.na(mirna_expression_combined)] <- 0 # any NA to 0, representing missing value
+
+```
+
+```{r}
+dim(mirna_expression_combined)
+head(mirna_expression_combined)
+```
+
+```{r}
+#write.csv(mirna_expression_combined,"~/Downloads/mirna_expression_combined.csv", row.names = FALSE)
+# Transposing the data to have patients as rows and miRNAs as columns
+miRNA_ids <- mirna_expression_combined$miRNA_ID
+miRNA_data_numeric <- mirna_expression_combined[, -1]
+miRNA_data_t <- as.data.frame(t(miRNA_data_numeric))
+colnames(miRNA_data_t) <- miRNA_ids
+rownames(miRNA_data_t) <- rownames(t(miRNA_data_numeric))
+head(miRNA_data_t)
+```
+
+```{r}
+dim(miRNA_medians_df)
+```
+
+```{r}
+# Calculate the median expression for each miRNA across all patients
+miRNA_medians <- apply(miRNA_data_t, 2, median, na.rm = TRUE)
+#miRNA_medians_df <- as.data.frame(miRNA_medians)
+#colnames(miRNA_medians_df) <- "MedianExpression"
+```
+
+```{r}
+library(ggplot2)
+library(reshape2)
+# Convert the medians into a data frame and name the column "Expression_Median"
+miRNA_medians_df <- data.frame(miRNA_ID = names(miRNA_medians), Expression_Median = miRNA_medians) 
+
+#head(miRNA_medians_df)
+
+miRNA_medians_df |> ggplot(aes(x= miRNA_ID,y=log(Expression_Median))) + geom_point()
+
+```
+
+```{r}
+library(ggplot2)
+
+# Assuming 'miRNA_medians_df' is a data frame with miRNA_ID and Expression_Median columns
+# Plot histogram of median expression levels
+ggplot(miRNA_medians_df, aes(x = Expression_Median)) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  labs(title = "Histogram of Median miRNA Expression Levels",
+       x = "Median Expression Level",
+       y = "Frequency") +
+  theme_minimal()
+
+library(ggplot2)
+# Add 1 to each median expression value to avoid issues with log(0)
+miRNA_medians_df$LogExpression_Median <- log(miRNA_medians_df$Expression_Median)
+
+# Plot histogram of the log-transformed median expression levels
+ggplot(miRNA_medians_df, aes(x = log(Expression_Median))) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  labs(title = "Histogram of Log-Transformed Median miRNA Expression Levels",
+       x = "Log(Median Expression)",
+       y = "Frequency") +
+  theme_minimal()
+
+```
+
+```{r}
+miRNA_medians_nonzero <- miRNA_medians_df |>
+  filter(Expression_Median >= 1)
+miRNA_medians_nonzero |> ggplot(aes(x= miRNA_ID, y=Expression_Median)) + geom_point()
+
+ggplot(miRNA_medians_nonzero, aes(x = Expression_Median)) +
+  geom_histogram(bins = 30, fill = "lightblue", color = "black") +
+  labs(title = "Histogram of Median miRNA Expression Levels",
+       x = "Median Expression Level",
+       y = "Frequency") +
+  theme_minimal()
+
+ggplot(miRNA_medians_nonzero, aes(x = log(Expression_Median))) +
+  geom_histogram(bins = 30, fill = "lightblue", color = "black") +
+  labs(title = "Histogram of Median miRNA Expression Levels",
+       x = "Median Expression Level",
+       y = "Frequency") +
+  theme_minimal()
+
+#SUM 
+```
+
+```{r}
+miRNA_medians_zero <- miRNA_medians_df |>
+  filter(Expression_Median < 1)
+#miRNA_medians_zero |> ggplot(aes(x= miRNA_ID, y=Expression_Median)) + geom_point()
+
+ggplot(miRNA_medians_zero, aes(x = Expression_Median)) +
+  geom_histogram(bins = 30, fill = "lightblue", color = "black") +
+  labs(title = "Histogram of Median miRNA Expression Levels",
+       x = "Median Expression Level",
+       y = "Frequency") +
+  theme_minimal()
+
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+#(with log transformed expression) miRNAs by median expression and select the top n=25 for clarity
+top_miRNAs <- miRNA_medians_df %>%
+  arrange(desc(Expression_Median)) %>%
+  head(25)  
+
+#plot the top couple miRNAs with log-transformed y-axis 
+ggplot(top_miRNAs, aes(x = reorder(miRNA_ID, Expression_Median), y = LogExpression_Median)) +
+  geom_point(size = 3) +  # Increase point size for better visibility
+  scale_y_continuous(trans = 'log') +  # Log-transform y-axis to handle high range
+  labs(title = "Top Few miRNAs by Median Expression Level",
+       x = "miRNA_ID",
+       y = "Log(Median Expression Level)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+head(miRNA_medians_df)
+```
+
+##SUM
+
+```{r}
+miRNA_sums <- apply(miRNA_data_t, 2, sum, na.rm = TRUE)
+miRNA_sums_df <- data.frame(miRNA_ID = names(miRNA_sums), Expression_Sum = miRNA_sums)
+#filter miRNA sums = 0
+miRNA_sums_zero <- miRNA_sums_df |>
+  filter(Expression_Sum < 1) #321 miRNAs are zero 
+
+#filter out non-zero miRNA sums
+miRNA_sums_nonzero <- miRNA_sums_df |>
+  filter(Expression_Sum > 19200) #1560 miRNAs are non-zero 
+
+#plot sums
+library(ggplot2)
+ggplot(miRNA_sums_df, aes(x = Expression_Sum)) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  labs(title = "Histogram of Median miRNA Expression Levels",
+       x = "Median Expression Level",
+       y = "Frequency") +
+  theme_minimal()
+
+library(ggplot2)
+#miRNA_sums_df$LogExpression_Mean <- log(miRNA_sums_df$Expression_Sum)
+
+# Plot histogram of the log-transformed median expression levels
+ggplot(miRNA_sums_nonzero, aes(x = log(Expression_Sum))) +
+  geom_histogram(bins = 30, fill = "lightgreen", color = "black") +
+  labs(title = "Histogram of SUM miRNA Expression Levels",
+       x = "SUM Expression)",
+       y = "Frequency") +
+  theme_minimal()
+
+# Sort (with log transformed expression) miRNAs by median expression and select the top n=25 for clarity
+top_miRNAs_sum <- miRNA_sums_nonzero %>%
+  arrange((Expression_Sum)) %>%
+  head(25)  
+
+# Plot the top couple miRNAs  
+ggplot(top_miRNAs_sum, aes(x = reorder(miRNA_ID, Expression_Sum), y = Expression_Sum)) +
+  geom_point(size = 3) +  # Increase point size for better visibility
+  #scale_y_continuous(trans = 'log') +  # Log-transform y-axis to handle high range
+  labs(title = "Visualizing miRNAs by SUM Expression Level",
+       x = "miRNA_ID",
+       y = "SUM Expression Level") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Filter miRNAs identified as non-zero in the original data
+nonzero_miRNAs <- miRNA_sums_nonzero$miRNA_ID
+
+#combination data for every patient to keep only non-zero miRNAs
+filtered_mirna_expression_combined <- mirna_expression_combined %>%
+  filter(miRNA_ID %in% nonzero_miRNAs)
+
+#Save filtered data for each patient
+for (patient in colnames(filtered_mirna_expression_combined)[-1]) { # exclude the miRNA_ID column
+  output_file <- paste0(full_dir, "/filtered_", patient, ".txt")
+  write.table(filtered_mirna_expression_combined[, c("miRNA_ID", patient)], file = output_file, sep = "\t", row.names = FALSE, quote = FALSE)
+}
+
+head(filtered_mirna_expression_combined)
+
+```
+
+```{r}
+#miRNA_data_t_com_nor is unfiltered transposed data 
+miRNA_ids_com <- filtered_mirna_expression_combined$miRNA_ID
+miRNA_data_numeric_com <- filtered_mirna_expression_combined[, -1]
+miRNA_data_t_com_nor <- as.data.frame(t(miRNA_data_numeric_com))
+colnames(miRNA_data_t_com_nor) <- miRNA_ids_com
+rownames(miRNA_data_t_com_nor) <- rownames(t(miRNA_data_numeric_com))
+
+#dataframe 
+miRNA_data_t_com_nor_df <- as.data.frame(miRNA_data_t_com_nor)
+
+miRNA_data_pca2 <- prcomp(miRNA_data_t_com_nor_df, center = TRUE, scale. = TRUE)
+fviz_eig(miRNA_data_pca1, addlabels = TRUE, ylim = c(0, 50),
+         main = "")
+```
+
+## **MEAN**
+
+```{r}
+#convert to mean 
+miRNA_means <- apply(miRNA_data_t, 2, mean, na.rm = TRUE)
+
+#Find mean and rename the col 
+miRNA_means_df <- data.frame(miRNA_ID = names(miRNA_means), Expression_Mean = miRNA_means)
+
+#Filter Zeros and non-zeros 
+miRNA_mean_zero <- miRNA_means_df |>
+  filter(Expression_Mean < 1)
+
+miRNA_mean_nonzero <- miRNA_means_df |>
+  filter(Expression_Mean >= 1) 
+
+#Plot the log-transformed mean expression levels
+ggplot(miRNA_means_df, aes(x = miRNA_ID, y = log(Expression_Mean))) +
+  geom_point(color="red") +
+  labs(title = "Log-Transformed Mean Expression Levels for Each miRNA",
+       x = "miRNA_ID",
+       y = "Log(Mean Expression Level)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+```
+
+```{r}
+library(ggplot2)
+
+# Assuming 'miRNA_medians_df' is a data frame with miRNA_ID and Expression_Median columns
+# Plot histogram of median expression levels
+ggplot(miRNA_means_df, aes(x = Expression_Mean)) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  labs(title = "Histogram of Median miRNA Expression Levels",
+       x = "Median Expression Level",
+       y = "Frequency") +
+  theme_minimal()
+
+library(ggplot2)
+# Add 1 to each median expression value to avoid issues with log(0)
+miRNA_medians_df$LogExpression_Mean <- log(miRNA_medians_df$Expression_Median)
+
+# Plot histogram of the log-transformed median expression levels
+ggplot(miRNA_means_df, aes(x = log(Expression_Mean))) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  labs(title = "Histogram of Log-Transformed Median miRNA Expression Levels",
+       x = "Log(Median Expression)",
+       y = "Frequency") +
+  theme_minimal()
+```
+
+```{r}
+# Sort (with log transformed expression) miRNAs by median expression and select the top n=25 for clarity
+top_miRNAs_mean <- miRNA_means_df %>%
+  arrange((Expression_Mean)) %>%
+  head(600)  
+
+# Plot the top couple miRNAs with log-transformed y-axis 
+ggplot(top_miRNAs_mean, aes(x = reorder(miRNA_ID, Expression_Mean), y = Expression_Mean)) +
+  geom_point(size = 3) +  # Increase point size for better visibility
+  #scale_y_continuous(trans = 'log') +  # Log-transform y-axis to handle high range
+  labs(title = "Visualizing miRNAs by Mean Expression Level",
+       x = "miRNA_ID",
+       y = "Mean Expression Level") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+sample_totals <- colSums(mirna_expression_combined[,-1]) #calculate total reads per sample to normalize to RPM
+
+mirna_expression_combined_normalized <- mirna_expression_combined # normalize and log tranform. use RPM normalization and log2 transformation for each sample
+for (sample in names(sample_totals)) {
+  mirna_expression_combined_normalized[[sample]] <- (mirna_expression_combined[[sample]] / sample_totals[sample]) * 1e6
+  mirna_expression_combined_normalized[[sample]] <- log2(mirna_expression_combined_normalized[[sample]] + 1)
+}
+```
+
+## PCA and Dimentsion Reduction:
+
+```{r}
+#function to preprocess miRNA data before PCA -- removing var = 0, because miRNAs that are the same throughout the patients
+preprocess_mirna_data <- function(data, keep_low_variance = TRUE, threshold = 1) {
+  variances <- apply(data, 2, var)
+  
+  if (keep_low_variance) {
+    mean_expression <- apply(data, 2, mean)
+    non_zero_variance_cols <- (variances > 0) | (mean_expression > threshold)
+  } else {
+    non_zero_variance_cols <- variances > 0
+  }
+  
+  filtered_data <- data[, non_zero_variance_cols]
+  
+  return(filtered_data)
+}
+#miRNA_data_com_nor_filtered <- preprocess_mirna_data(mirna_expression_combined_normalized)
+```
+
+```{r}
+library(factoextra) #if we want to preprocess before applying PCA
+
+mirna_expression_combined_normalized_df <- as.data.frame(mirna_expression_combined_normalized) #column miRNA 
+
+#set the first column as rownames (miRNA IDs) -- just to ensure we're on the same page
+rownames(mirna_expression_combined_normalized_df) <- mirna_expression_combined_normalized_df$miRNA_ID
+mirna_expression_combined_normalized_df <- mirna_expression_combined_normalized_df[, -1] 
+
+
+# Remove columns with zero variance
+non_zero_variance_cols <- apply(mirna_expression_combined_normalized_df, 2, function(x) var(x) > 0)
+miRNA_data_non_zero <- mirna_expression_combined_normalized_df[, non_zero_variance_cols]
+
+#dim(miRNA_data_non_zero) -- 1881 36, the same as the original so we are not filtering out
+
+
+```
+
+```{r}
+# Perform PCA on the filtered data 
+#rows are samples, and the columns are miRNAs, 
+miRNA_data_pca <- prcomp(mirna_expression_combined_normalized_df, center = TRUE, scale. = TRUE)
+
+fviz_eig(miRNA_data_pca, addlabels = TRUE, ylim = c(0, 50),
+         main = "")
+
+```
+
+```{r}
+dim(miRNA_data_filtered)
+dim(mirna_expression_combined_normalized_df)
+```
+
+```{r}
+#PCA with filtered data  
+#rows are miRNAs, and the columns are samples
+miRNA_data_pca1 <- prcomp(miRNA_data_t, center = TRUE, scale. = TRUE)
+fviz_eig(miRNA_data_pca1, addlabels = TRUE, ylim = c(0, 50),
+         main = "")
+
+
+# Remove columns with zero or constant variance
+miRNA_data_t_fil <- miRNA_data_t[, apply(miRNA_data_t, 2, function(x) var(x) > 0)]
+miRNA_data_pca1 <- prcomp(miRNA_data_t_fil, center = TRUE, scale. = TRUE)
+
+=
+fviz_eig(miRNA_data_pca1, addlabels = TRUE, ylim = c(0, 50), main = "")
+
+```
+
+```{r}
+#perform PCA
+perform_pca <- function(data, scale_data = TRUE) {
+  pca_result <- prcomp(data, center = TRUE, scale. = scale_data)
+  return(pca_result)
+}
+
+miRNA_data_pca <- perform_pca(miRNA_data_filtered)
+
+fviz_eig(miRNA_data_pca, addlabels = TRUE, ylim = c(0, 50))
+
+```
+
+```{r}
+# Load required library
+library(GGally)
+
+# Create a data frame of the first 5 principal components
+pca_pairwise_data <- as.data.frame(miRNA_data_pca$x[, 1:5])
+colnames(pca_pairwise_data) <- paste0("PC", 1:5)
+
+# Pairwise plot of the first 5 principal components
+ggpairs(pca_pairwise_data,
+        title = "Pairwise Plots of Principal Components 1-5")
+
+```
+
+```{r}
+# Calculate cumulative variance explained
+explained_variance <- cumsum(miRNA_data_pca$sdev^2 / sum(miRNA_data_pca$sdev^2)) * 100
+
+# Plot the cumulative variance explained by the principal components
+plot(1:length(explained_variance), explained_variance, type = "b", pch = 19,
+     xlab = "Number of Principal Components",
+     ylab = "Cumulative Variance Explained (%)",
+     main = "Cumulative Variance Explained by Principal Components")
+abline(h = 80, col = "red", lty = 2)  # Reference line for 80% variance explained
+
+```
+
+```{r}
+# Function to extract and visualize loading scores for a specific principal component
+plot_loading_scores <- function(pca_result, pc = 1, top_n = 10) {
+  loadings <- pca_result$rotation[, pc]
+  loadings_df <- data.frame(miRNA_ID = names(loadings), Loading = loadings)
+  
+  # Select top and bottom n loadings
+  top_loadings <- loadings_df %>%
+    arrange(desc(abs(Loading))) %>%
+    head(top_n)
+  
+  # Plot the loadings
+  ggplot(top_loadings, aes(x = reorder(miRNA_ID, Loading), y = Loading)) +
+    geom_bar(stat = "identity", fill = "lightblue") +
+    labs(title = paste("Top", top_n, " ", pc),
+         x = "miRNA_ID",
+         y = "Loading Score") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+# Plot the loading scores for PC1
+plot_loading_scores(miRNA_data_pca, pc = 1, top_n = 10)
+```
+
+```{r}
+# Function to visualize PCA projection
+visualize_pca <- function(pca_result, title = "PCA of miRNA Expression Data") {
+  fviz_pca_ind(pca_result,
+               geom.ind = "point", # Show points only (no labels)
+               pointshape = 21,
+               pointsize = 2,
+               fill = "blue",
+               repel = TRUE, # Avoid overlapping of labels
+               title = title)
+}
+
+visualize_pca(miRNA_data_pca)
+
+```
+
+```{r}
+library(plotly)
+
+pca_3d_data <- as.data.frame(miRNA_data_pca$x[, 1:3])
+colnames(pca_3d_data) <- c("PC1", "PC2", "PC3")
+
+plot_ly(data = pca_3d_data, x = ~PC1, y = ~PC2, z = ~PC3, type = "scatter3d", mode = "markers",
+        marker = list(size = 4, color = "blue")) %>%
+  layout(title = "3D PCA of miRNA Expression Data",
+         scene = list(xaxis = list(title = "PC1"),
+                      yaxis = list(title = "PC2"),
+                      zaxis = list(title = "PC3")))
+
+```
+
+K-means
+
+```{r}
+#K-means clustering
+set.seed(123)
+number_of_clusters <- 4  
+kmeans_result <- kmeans(miRNA_data_t, centers = number_of_clusters, nstart = 25)
+
+# Visualize the clusters
+pca_data <- as.data.frame(miRNA_data_pca$x) 
+pca_data$Cluster <- as.factor(kmeans_result$cluster)
+
+ggplot(pca_data, aes(x = PC1, y = PC2, color = Cluster)) +
+  geom_point(size = 3, alpha = 0.7) +
+  labs(title = "PCA of miRNA Expression Data with K-means Clusters",
+       x = "Principal Component 1",
+       y = "Principal Component 2") +
+  theme_minimal() +
+  theme(legend.position = "right")
+```
+
+```{r}
+#JUST FOR THE SECOND DATA 
+#seed for reproducibility
+set.seed(123)
+number_of_clusters <- 4 
+
+kmeans_result <- kmeans(miRNA_data_pca$x, centers = number_of_clusters, nstart = 25)
+
+pca_data <- as.data.frame(miRNA_data_pca$x) 
+
+
+pca_data$Cluster <- as.factor(kmeans_result$cluster)
+
+ggplot(pca_data, aes(x = PC1, y = PC2, color = Cluster)) +
+  geom_point(size = 3, alpha = 0.7) +
+  labs(title = "PCA of miRNA Expression Data with K-means Clusters",
+       x = "Principal Component 1",
+       y = "Principal Component 2") +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+```
+
+```{r}
+library(plotly)
+
+#a data frame with the first three principal components
+pca_data_3d <- as.data.frame(miRNA_data_pca$x[, 1:4])
+pca_data_3d$Cluster <- as.factor(kmeans_result$cluster)
+
+#3D scatter plot
+plot_ly(data = pca_data_3d, x = ~PC2, y = ~PC3, z = ~PC4, color = ~Cluster, colors = "Set1",
+        type = "scatter3d", mode = "markers", marker = list(size = 4)) %>%
+  layout(title = "",
+         scene = list(xaxis = list(title = "PC1"),
+                      yaxis = list(title = "PC2"),
+                      zaxis = list(title = "PC3")))
+
+```
+
+#################################################################################################################################################### 
+
+```{r}
+# NOT important for the time being 
+library(ggplot2)
+library(reshape2)
+
+# Convert the transposed data to long format for ggplot (keeping all columns as-is)
+#miRNA_data_long <- melt(miRNA_medians_df, variable.name = "miRNA_ID", value.name = "LogExpression_Median")
+
+miRNA_data_long <- melt(miRNA_medians_df, variable.name = "miRNA_ID", value.name = "LogExpression_Median")
+
+# Add a small constant only for the plot to handle log transformation on zeros
+miRNA_data_long$LogExpression_Median <- miRNA_data_long$LogExpression_Median + 1  # Adds 1 to avoid log(0)
+
+# Plot a violin plot with log-transformed y-axis for better visualization
+ggplot(miRNA_data_long, aes(x = miRNA_ID, y = LogExpression_Median)) +
+  geom_violin(fill = "skyblue", color = "black") +
+  scale_y_log10() +  # Log-transform the y-axis without modifying underlying data
+  labs(title = "Distribution of Expression Levels for Each miRNA_ID (Log Scale)",
+       x = "miRNA_ID",
+       y = "Log(Expression Level + 1)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+```
+
+```{r}
+pca_result <- prcomp(miRNA_data_t, center = TRUE, scale. = TRUE)
+
+# Convert the PCA results into a data frame for plotting, using the first 2 principal components
+pca_df <- as.data.frame(pca_result$x[, 1:2])
+pca_df$Patient <- rownames(miRNA_data_t)
+
+# Visualize PCA result using ggplot2
+library(ggplot2)
+p <- ggplot(pca_df, aes(x = PC1, y = PC2, label = Patient)) +
+  geom_point() +
+  ggtitle("PCA of miRNA Data by Patients (Zero Variance Columns Removed)") +
+  theme_minimal()
+
+# Display the PCA plot
+print(p)
+
+```
+
+```{r}
+
+# Perform K-Means clustering on PCA-reduced data
+set.seed(123)  # For reproducibility
+kmeans_result <- kmeans(pca_df[, 1:2], centers = 3)  # Adjust 'centers' as needed
+pca_df$Cluster <- as.factor(kmeans_result$cluster)
+
+# Plot the clusters
+p_cluster <- ggplot(pca_df, aes(x = PC1, y = PC2, color = Cluster, label = Patient)) +
+  geom_point() +
+  ggtitle("K-Means Clustering of miRNA Data (PCA-Reduced)") +
+  theme_minimal()
+
+# Display the clustered plot
+print(p_cluster)
+```
+
+```{r}
+mirna_long <- melt(mirna_expression_combined, id.vars = "miRNA_ID", variable.name = "Sample", value.name = "Read_Count")
+
+# Plot histogram of read counts
+ggplot(mirna_long, aes(x = Read_Count)) +
+  geom_histogram(binwidth = 1, fill = "pink", color = "black") +
+  scale_x_log10() + # Log scale to handle skewed distribution
+  labs(title = "Distribution of miRNA Read Counts",
+       x = "Read Count (log10 scale)",
+       y = "Frequency") +
+  theme_minimal()
+
+# Plot boxplot to show distribution across samples
+ggplot(mirna_long, aes(x = miRNA_ID, y = Read_Count)) +
+  geom_boxplot(outlier.colour = "red", outlier.size = 1) +
+  scale_y_log10() + # Log scale to handle skewed distribution
+  labs(title = "miRNA Read Count Distribution Across Samples",
+       x = "Sample",
+       y = "Read Count (log10 scale)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) # Rotate sample labels for readability
+
+```
+
+```{r}
+#step 2 -- normalize / log-transform
+sample_totals <- colSums(mirna_expression_combined[,-1]) #calculate total reads per sample to normalize to RPM
+
+mirna_expression_combined_normalized <- mirna_expression_combined # normalize and log tranform. use RPM normalization and log2 transformation for each sample
+for (sample in names(sample_totals)) {
+  mirna_expression_combined_normalized[[sample]] <- (mirna_expression_combined[[sample]] / sample_totals[sample]) * 1e6
+  mirna_expression_combined_normalized[[sample]] <- log2(mirna_expression_combined_normalized[[sample]] + 1)
+}
+
+```
+
+```{r}
+dim(mirna_expression_combined_normalized)
+```
+
+```{r}
+write.csv(mirna_expression_combined_normalized,"~/Downloads/mirna_expression_combined_normalized.csv", row.names = FALSE)
+```
+
+```{r}
+#additional -- let's plot to visualize 
+#box plot
+library(ggplot2)
+library(reshape2)
+library(pheatmap)
+long_data <- melt(mirna_expression_combined_normalized, id.vars = "miRNA_ID", variable.name = "Sample", value.name = "log_RPM")
+
+# Shorten sample names by abbreviating to the first few characters
+# For example, take the first 8 characters
+long_data$Sample <- substr(long_data$Sample, 1, 8)
+
+ggplot(long_data, aes(x = Sample, y = log_RPM)) +
+  geom_boxplot() +
+  labs(title = "Distribution of RPM Across Samples", x = "Sample", y = "Log-RPM") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8)  # Adjust angle and font size
+  )
+
+```
+
+```{r}
+#density in one 
+ggplot(long_data, aes(x = log_RPM, color = Sample)) +
+  geom_density() +
+  labs(title = "Density of Log-RPM Values Across Samples", x = "Log-RPM", y = "Density")
+
+```
+
+```{r}
+# density plot for log-RPM values across all samples
+ggplot(long_data, aes(x = log_RPM)) +
+  geom_density(fill = "blue", alpha = 0.5) +  # Set fill color and transparency
+  labs(title = "Density of Log-RPM Values Across Samples", x = "Log-RPM", y = "Density") +
+  facet_wrap(~ Sample, scales = "free_y", ncol = 5) +  # Use faceting with 5 columns
+  theme(
+    strip.text = element_text(size = 8),  # Adjust facet label font size
+    axis.text.x = element_text(size = 7)  # Reduce font size for x-axis ticks
+  )
+```
+
+```{r}
+#step 3 -- filter consistently expressed miRNAs
+#idetify threshold and minimum percentage of samples
+expression_threshold <- 4  #log-RPM threshold for considering a miRNA as expressed
+min_samples_percentage <- 0.5  #percentage of samples where miRNA must exceed threshold
+
+min_samples <- round(min_samples_percentage * (ncol(mirna_expression_combined_normalized) - 1)) #calculate the minimum number of samples needed for a miRNA to be retained
+
+consistently_expressed_miRNAs <- mirna_expression_combined_normalized %>%
+  filter(rowSums(.[, -1] > expression_threshold) >= min_samples) #filter miRNAs based on the expression threshold and sample percentage
+dim(consistently_expressed_miRNAs)
+```
+
+```{r}
+# consensus clustering (k-means as used in the TCGA paper)
+#install.packages("BiocManager")
+BiocManager::install("ConsensusClusterPlus")
+library(cluster)
+
+#clustering_data <- as.matrix(consistently_expressed_miRNAs[, -1]) #prepare data for clustering by removing miRNA_ID column
+#clustering_data <- t(clustering_data)
+#rownames(clustering_data) <- consistently_expressed_miRNAs$miRNA_ID
+#colnames(clustering_data) <- paste0("Sample_", 1:ncol(clustering_data))
+
+rownames(consistently_expressed_miRNAs) <- consistently_expressed_miRNAs$miRNA_ID
+consistently_expressed_miRNAs <- consistently_expressed_miRNAs[, -1]
+clustering_data <- as.matrix(consistently_expressed_miRNAs)
+
+
+# Set parameters
+num_clusters <- 3  # Number of clusters to test
+num_reps <- 20  # Number of repetitions
+sample_fraction <- 0.8  # Fraction of samples to include in each subset
+
+# Create a matrix to store co-clustering counts
+co_cluster_matrix <- matrix(0, ncol = ncol(clustering_data), nrow = ncol(clustering_data))
+colnames(co_cluster_matrix) <- colnames(clustering_data)
+rownames(co_cluster_matrix) <- colnames(clustering_data)
+
+# Run repeated k-means clustering
+set.seed(1234)  # For reproducibility
+for (i in 1:num_reps) {
+  # Randomly sample a subset of samples
+  sampled_indices <- sample(1:ncol(clustering_data), size = round(sample_fraction * ncol(clustering_data)))
+  data_subset <- clustering_data[, sampled_indices]
+  
+  # Run k-means clustering
+  kmeans_result <- kmeans(t(data_subset), centers = num_clusters, nstart = 10)
+  
+  # Update co-clustering counts
+  for (k in 1:num_clusters) {
+    cluster_members <- which(kmeans_result$cluster == k)
+    for (m in cluster_members) {
+      for (n in cluster_members) {
+        co_cluster_matrix[sampled_indices[m], sampled_indices[n]] <- co_cluster_matrix[sampled_indices[m], sampled_indices[n]] + 1
+      }
+    }
+  }
+}
+
+co_cluster_matrix <- co_cluster_matrix / num_reps
+heatmap(co_cluster_matrix, Rowv = NA, Colv = NA, main = "Co-Cluster Matrix", xlab = "Samples", ylab = "Samples")
+
+```
+
+```{r}
+# hierarchical clustering
+hc <- hclust(dist(clustering_data), method = "ward.D2")
+#plot the dendrogram to visualize clustering of samples
+plot(hc, main = "Hierarchical Clustering Dendrogram", xlab = "Samples", sub = "")
+
+# Perform k-means clustering with 2 clusters, given the small sample size
+kmeans_result <- kmeans(clustering_data, centers = 2, nstart = 10)
+print(kmeans_result$cluster)  # Print cluster assignments for each sample
+
+```
+
+```{r}
+#k-means clustering 
+#kmeans_result <- kmeans(clustering_data, centers = 2, nstart = 10)
+#print(kmeans_result$cluster)  #
+num_clusters <- 4
+#set.seed(42)
+kmeans_result <- kmeans(t(consistently_expressed_miRNAs[,-1]), centers = num_clusters, nstart = 10)
+
+
+#PCA for dimensionality reduction
+pca_result <- prcomp(t(consistently_expressed_miRNAs[,-1]), center = TRUE, scale. = TRUE)
+ 
+
+
+```
+
+```{r}
+# Plot PCA with clusters PC1 -- blue (cluster 3) PC2- the purple (4), PC4 + 3 -- cluster 1 and 2.  *** lable the samples 
+pca_data <- as.data.frame(pca_result$x[,1:2]) 
+pca_data$Cluster <- as.factor(kmeans_result$cluster)
+ggplot(pca_data, aes(x = PC1, y = PC2, color = Cluster)) +
+  geom_point(size = 3) +
+  labs(title = "PCA for K-Means Clusters", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+
+```{r}
+summary(pca_result) #multiple dimension 
+```
+
+```{r}
+#connectivity cluster matrix
+num_reps <- 20 #number of replicates for stability analysis
+num_samples <- ncol(consistently_expressed_miRNAs[,-1])
+co_cluster_matrix <- matrix(0, ncol = num_samples, nrow = num_samples)
+
+#repeated k-means clustering
+#set.seed(1234)
+for (i in 1:num_reps) {
+  sampled_indices <- sample(1:num_samples, size = round(0.8 * num_samples))
+  data_subset <- t(consistently_expressed_miRNAs[,sampled_indices + 1])  # +1 to skip miRNA_ID column
+  kmeans_result <- kmeans(data_subset, centers = num_clusters, nstart = 10)
+  
+  # Update co-cluster counts
+  for (k in 1:num_clusters) {
+    members <- which(kmeans_result$cluster == k)
+    co_cluster_matrix[sampled_indices[members], sampled_indices[members]] <- 
+      co_cluster_matrix[sampled_indices[members], sampled_indices[members]] + 1
+  }
+}
+
+# Normalize co-cluster matrix
+co_cluster_matrix <- co_cluster_matrix / num_reps
+colnames(co_cluster_matrix) <- colnames(consistently_expressed_miRNAs[,-1])
+rownames(co_cluster_matrix) <- colnames(consistently_expressed_miRNAs[,-1])
+#dim(clustering_data)
+
+# Plot heatmap
+pheatmap(co_cluster_matrix, main = "Connectivity Cluster Matrix Heatmap", color = colorRampPalette(c("white", "blue"))(50))
+
+```
+
+```{r}
+#trying NMF
+if (!requireNamespace("NMF", quietly = TRUE)) {
+  install.packages("BiocManager")
+  BiocManager::install("NMF")
+}
+library(NMF)
+library(ggplot2)
+V <- as.matrix(consistently_expressed_miRNAs[,-1])
+num_clusters <- 3
+nmf_result <- nmf(V, rank = num_clusters, method = "brunet", nrun = 20, seed = 1234)
+
+#set.seed(123)
+#V <- as.matrix(clustering_data)
+#dim(V)
+#num_clusters <- 4
+#nmf_result <- nmf(V, num_clusters, .options = "v")
+
+# Extract W and H matrices
+W <- basis(nmf_result)
+H <- coef(nmf_result)
+
+# Determine clusters based on the maximum component in W matrix
+clusters <- apply(W, 1, which.max)
+
+# Add the clusters to a data frame for visualization
+cluster_df <- data.frame(Sample = 1:nrow(V), Cluster = as.factor(clusters))
+
+# Visualization: Plot clusters using ggplot2
+ggplot(cluster_df, aes(x = Sample, y = Cluster, color = Cluster)) +
+  geom_point(size = 3) +
+  labs(title = "Sample Clustering Based on NMF", x = "Sample Index", y = "Assigned Cluster") +
+  theme_minimal()
+
+# Output the assigned clusters
+print("Cluster assignments for each sample:")
+print(cluster_df)
+```
+
+```{r}
+# Heatmap of W (basis matrix) - rows are samples, columns are components
+library(Rtsne)
+library(ggplot2)
+pheatmap(W, cluster_rows = TRUE, cluster_cols = TRUE, 
+         main = "Heatmap of Basis Matrix (W)", color = colorRampPalette(c("white", "blue"))(50))
+# Heatmap of H (coefficient matrix) - rows are components, columns are features
+pheatmap(H, cluster_rows = TRUE, cluster_cols = TRUE, 
+         main = "Heatmap of Coefficient Matrix (H)", color = colorRampPalette(c("white", "red"))(50))
+
+# Perform t-SNE on W matrix
+perplexity_value <- 10
+tsne_result <- Rtsne(W, dims = 2, perplexity = perplexity_value)
+tsne_data <- data.frame(tsne_result$Y, Cluster = as.factor(clusters))
+
+# Plot with ggplot2
+ggplot(tsne_data, aes(x = X1, y = X2, color = Cluster)) +
+  geom_point(size = 3) +
+  labs(title = "t-SNE Visualization of Clusters", x = "t-SNE Dimension 1", y = "t-SNE Dimension 2") +
+  theme_minimal()
+```
+
+```{r}
+cluster_range <- 2:10  # Test 2 to 10 clusters
+cophenetic_scores <- numeric(length(cluster_range))
+reconstruction_errors <- numeric(length(cluster_range))
+
+for (k in cluster_range) {
+  # Run NMF with multiple replicates
+  nmf_result <- nmf(V, rank = k, nrun = 20, .options = "v")  # Increase nrun for stability
+
+  # Store cophenetic coefficient and reconstruction error
+  cophenetic_scores[k - 1] <- cophenetic(nmf_result)
+  reconstruction_errors[k - 1] <- summary(nmf_result)$residuals
+}
+
+# Plot cophenetic scores
+plot(cluster_range, cophenetic_scores, type = "b", 
+     main = "Cophenetic Coefficient vs Number of Clusters", 
+     xlab = "Number of Clusters", ylab = "Cophenetic Coefficient")
+
+# Plot reconstruction error
+plot(cluster_range, reconstruction_errors, type = "b", 
+     main = "Reconstruction Error vs Number of Clusters", 
+     xlab = "Number of Clusters", ylab = "Reconstruction Error")
+
+```
