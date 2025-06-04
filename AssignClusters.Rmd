@@ -1,0 +1,211 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Install and then import packages
+
+```{r Install}
+#source("https://bioconductor.org/biocLite.R")
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("biomaRt")
+BiocManager::install("org.Hs.eg.db")
+BiocManager::install("consensusOV")
+```
+
+Imports
+```{r Imports}
+library(biomaRt)
+library(org.Hs.eg.db)
+library(consensusOV)
+library(dplyr)
+library(genefu)
+```
+
+
+```{r Identify Files}
+getwd()
+subset_dir <- "data/gdc_download_20250330_115711.237016"
+
+# Find all files ending in .tsv recursively
+tsv_files <- list.files(
+  path = subset_dir,
+  pattern = "\\.tsv$",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+# Filter to make sure we're only keeping files (not directories or symlinks)
+tsv_files <- tsv_files[file.info(tsv_files)$isdir == FALSE]
+
+print(length(tsv_files))
+
+```
+
+```{r}
+# Select only files with rna_seq in name
+rna_files <- tsv_files[grepl("rna_seq", tsv_files)]
+print(length(rna_files))
+```
+
+
+```{r Create Table}
+# Loop through each file and extract the gene_id and tpm, which we can use to track all of the genes across all of the individuals
+
+rna_list <- list()
+for (file in rna_files) {
+  temp_data <- read.delim(file, header = TRUE, sep = "\t", comment.char = "#")
+  temp_data <- temp_data[, c("gene_id", "tpm_unstranded")] #gene_name, gene_type, raw read counts (for unstranded and stranded, maybe useful in normalization?) -- are less relevant in classification using consensusOV
+  sample_name <- basename(file) 
+  colnames(temp_data)[2] <- sample_name 
+  rna_list[[sample_name]] <- temp_data
+}
+# This will create a table with gene_id as the first column and each sample
+# in columns 2:
+rna_expression_combined <- Reduce(function(x, y) merge(x, y, by = "gene_id", all = TRUE), rna_list)
+
+# Create a column of cleaned ENSEMBL ids (remove version)
+rna_expression_combined$ensembl_gene_id <- sub("\\.\\d+$", "",rna_expression_combined$gene_id)
+
+```
+
+```{r Map Ensembl IDs onto Entrez and Gene Symbol}
+mart <- biomaRt::useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                         dataset = "hsapiens_gene_ensembl",
+                         host = "https://www.ensembl.org")
+
+genes <- getBM(
+  filters = "ensembl_gene_id",
+  attributes = c("ensembl_gene_id", "entrezgene_id", "hgnc_symbol"),
+  values = rna_expression_combined$ensembl_gene_id,
+  mart = mart
+)
+```
+
+
+```{r}
+# Check for duplicated values in the entrez or gene symbol columns
+genes %>%
+  group_by(ensembl_gene_id) %>%
+  summarise(
+    n_entrez = n_distinct(entrezgene_id, na.rm = TRUE),
+    n_symbol = n_distinct(hgnc_symbol, na.rm = TRUE),
+    .groups = "drop"
+    ) %>%
+  filter(n_entrez > 1 | n_symbol > 1)
+
+bad <- genes %>%
+  group_by(entrezgene_id) %>%
+  summarise(
+    n_entrez = n_distinct(ensembl_gene_id, na.rm = TRUE),
+    .groups = "drop"
+    ) %>%
+  filter(n_entrez > 1)
+
+# Remove duplicated ENSEMBL --> entrez mappings by retaining the shortest
+# entrez id (most likely to be a real gene rather than a LOC)
+genes_clean <- genes %>%
+  # Step 1: Keep shortest entrez ID per ensembl ID
+  mutate(entrez_length = nchar(as.character(entrezgene_id))) %>%
+  group_by(ensembl_gene_id) %>%
+  slice_min(entrez_length, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(-entrez_length) %>%
+
+  # Step 2: Remove duplicate entrez IDs if the symbol is blank or NA
+  group_by(entrezgene_id) %>%
+  filter(!(n() > 1 & (hgnc_symbol == "" | is.na(hgnc_symbol)))) %>%
+  ungroup() %>%
+
+  # Step 3: For remaining entrezgene_id duplicates, keep the shortest symbol, or first alphabetically if tied
+  mutate(symbol_length = nchar(hgnc_symbol)) %>%
+  group_by(entrezgene_id) %>%
+  arrange(symbol_length, hgnc_symbol) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select(-symbol_length)
+
+  # Join to add 'name' from lookup table into rna_expression_combined
+rna_expression_harmonized <- rna_expression_combined %>%
+  left_join(genes_clean, by = "ensembl_gene_id")
+
+# Remove rows where entrez_ids are NA or match the duplicated IDs to remove
+rna_expression_filtered <- rna_expression_harmonized[!is.na(rna_expression_harmonized$entrezgene_id), ]
+
+```
+
+```{r}
+# filtering the data. we only need geneid and expression for each patients in wide format
+data_matrix <- as.matrix( rna_expression_filtered[, 2:425])
+
+# Extract entrez_ids and assign to row names
+rownames(data_matrix) <- rna_expression_filtered[, 427]
+
+```
+
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+```{r}
+bentink.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), method = "Bentink")
+bentink.subtypes$Bentink.subtypes
+konecny.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), method = "Konecny")
+konecny.subtypes$Konecny.subtypes
+helland.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), method = "Helland")
+helland.subtypes$Helland.subtypes
+
+
+#conc.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), "consensusOV")
+```
+
+```{r}
+table(bentink.subtypes$Bentink.subtypes)
+table(helland.subtypes$Helland.subtypes)
+table(konecny.subtypes$Konecny.subtypes)
+```
+
+```{r}
+# Assuming your matrix is called `consensus_matrix`
+# and has the columns: IMR_consensus, DIF_consensus, PRO_consensus, MES_consensus
+
+# Step 1: Get the max value per row
+row_max <- apply(conc.subtypes$rf.probs, 1, max, na.rm = TRUE)
+
+# Step 2: Plot histogram
+hist(row_max,
+     breaks = 20,
+     col = "steelblue",
+     main = "Histogram of Max Consensus Scores per Row",
+     xlab = "Max Consensus Score",
+     ylab = "Count")
+
+
+```
+```{r}
+# Let's say your matrix is called `consensus_matrix`
+
+consensus_matrix <- conc.subtypes$rf.probs
+
+# Let's say your matrix is called `consensus_matrix`
+
+# Step 1: Find the name of the column with the max value per row
+max_col_names <- apply(consensus_matrix, 1, function(row) {
+  colnames(consensus_matrix)[which.max(row)]
+})
+
+# Step 2: Create a 2-column dataframe with row names preserved
+max_label_df <- data.frame(
+  sample = rownames(consensus_matrix),
+  max_label = max_col_names,
+  row.names = NULL,  # optional: removes row numbers
+  stringsAsFactors = FALSE
+)
+
+
+```
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+```{r}
+
+```
+
