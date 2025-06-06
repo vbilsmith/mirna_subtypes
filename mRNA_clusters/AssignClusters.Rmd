@@ -138,9 +138,102 @@ rna_expression_filtered <- rna_expression_harmonized[!is.na(rna_expression_harmo
 ```{r}
 # filtering the data. we only need geneid and expression for each patients in wide format
 data_matrix <- as.matrix( rna_expression_filtered[, 2:425])
+```
 
+
+```{r}
 # Extract entrez_ids and assign to row names
 rownames(data_matrix) <- rna_expression_filtered[, 427]
+
+```
+
+```{r}
+library(readxl)
+
+file_path <- "data/jnci_JNCI_14_0249_s05.xls"
+
+# List available sheets (optional, helpful to confirm what’s there)
+excel_sheets(file_path)
+
+# Read sheet 4 (as you originally intended)
+konecny.supplementary.data <- read_excel(file_path, sheet = 4)
+
+# Extract relevant columns (keep EntrezGeneID + 4 centroid columns)
+konecny.centroids.raw <- konecny.supplementary.data[, c(2, 4:7)]
+
+# Rename for clarity (optional)
+colnames(konecny.centroids.raw)[1] <- "EntrezID"
+
+# Convert EntrezID to character
+konecny.centroids.raw$EntrezID <- as.character(konecny.centroids.raw$EntrezID)
+
+# Average duplicates: one row per Entrez ID
+konecny.centroids <- konecny.centroids.raw %>%
+  group_by(EntrezID) %>%
+  summarise(across(everything(), mean, na.rm = TRUE)) %>%
+  as.data.frame()
+
+# Set rownames and remove EntrezID column
+rownames(konecny.centroids) <- konecny.centroids$EntrezID
+konecny.centroids <- unique(konecny.centroids)
+konecny.centroids$EntrezID <- NULL
+
+shared_genes <- intersect(rownames(konecny.centroids), rownames(data_matrix))
+
+```
+
+
+
+```{r}
+get.konecny.subtypes.fixed <- function(expression.matrix, entrez.ids) {
+  
+  # Z-score normalize each gene (row)
+  expression.matrix <- t(scale(t(expression.matrix)))
+  
+  # Ensure entrez.ids is character, in case it's being used later
+  entrez.ids <- as.character(entrez.ids)
+  
+  # Identify shared genes
+  intersecting.entrez.ids <- intersect(rownames(expression.matrix), rownames(konecny.centroids))
+  
+  # Subset both matrices to shared genes
+  expression.matrix <- expression.matrix[intersecting.entrez.ids, , drop = FALSE]
+  konecny.centroids <- konecny.centroids[intersecting.entrez.ids, , drop = FALSE]
+  
+  # Sanity check
+  if (!all(rownames(expression.matrix) == rownames(konecny.centroids))) {
+    stop("There is a mismatch between the Entrez IDs in the reference and input datasets.")
+  }
+
+    # Coerce both to matrices
+  konecny.centroids <- as.matrix(konecny.centroids)
+  expression.matrix  <- as.matrix(expression.matrix)
+
+  # Step 1: Find common genes
+  shared_genes <- intersect(rownames(expression.matrix), rownames(konecny.centroids))
+  
+  # Drop genes with NA or constant rows across either matrix
+  valid_genes <- which(
+    complete.cases(konecny.centroids) &
+    complete.cases(expression.matrix) &
+    apply(konecny.centroids, 1, sd) > 0 &
+    apply(expression.matrix, 1, sd) > 0
+  )
+  
+  konecny.centroids <- konecny.centroids[valid_genes, , drop = FALSE]
+  expression.matrix  <- expression.matrix[valid_genes, , drop = FALSE]
+  
+  # Now run cor()
+  spearman.cc.vals <- cor(konecny.centroids, expression.matrix, method = "spearman")
+
+  # Each row is a subtype, each column is a sample
+  # So we want the subtype (row) with the max correlation for each column (sample)
+  max.idx <- apply(spearman.cc.vals, 2, which.max)
+  subtypes <- rownames(spearman.cc.vals)[max.idx]
+  subtypes <- factor(subtypes, levels = rownames(spearman.cc.vals))
+
+  return(list(Konecny.subtypes = subtypes, spearman.cc.vals = t(spearman.cc.vals)))
+}
 
 ```
 
@@ -149,19 +242,23 @@ When you save the notebook, an HTML file containing the code and output will be 
 ```{r}
 bentink.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), method = "Bentink")
 bentink.subtypes$Bentink.subtypes
-konecny.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), method = "Konecny")
+konecny.subtypes <- get.konecny.subtypes.fixed(data_matrix, rownames(data_matrix))
 konecny.subtypes$Konecny.subtypes
 helland.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), method = "Helland")
 helland.subtypes$Helland.subtypes
 
+verhaak.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), method = "Verhaak")
 
-#conc.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), "consensusOV")
+
+conc.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), "consensusOV")
 ```
 
 ```{r}
 table(bentink.subtypes$Bentink.subtypes)
 table(helland.subtypes$Helland.subtypes)
 table(konecny.subtypes$Konecny.subtypes)
+table(verhaak.subtypes$Verhaak.subtypes)
+table(conc.subtypes$consensusOV.subtypes)
 ```
 
 ```{r}
@@ -186,8 +283,6 @@ hist(row_max,
 
 consensus_matrix <- conc.subtypes$rf.probs
 
-# Let's say your matrix is called `consensus_matrix`
-
 # Step 1: Find the name of the column with the max value per row
 max_col_names <- apply(consensus_matrix, 1, function(row) {
   colnames(consensus_matrix)[which.max(row)]
@@ -206,6 +301,14 @@ max_label_df <- data.frame(
 
 The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
 ```{r}
+write.csv(DataFrame("sample" = rownames(conc.subtypes$rf.probs),
+                    "type" = conc.subtypes$consensusOV.subtypes,
+                    "score" = row_max), 
+          "ConsensusOV_labels.csv",
+          row.names = FALSE)
+
+write.csv(DataFrame(conc.subtypes$rf.probs), "ConsensusOV_probs.csv",
+          row.names = TRUE)
 
 ```
 
