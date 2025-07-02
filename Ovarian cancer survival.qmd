@@ -1,0 +1,414 @@
+---
+title: "Ovarian cancer survival"
+format: html
+editor: visual
+---
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(survival)
+library(ggplot2)
+library(ggsurvfit)
+library(readr)
+library(survminer)
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("TCGAbiolinks")
+```
+
+```{r}
+survivalData <- readr::read_tsv("clinical.project-tcga-ov.2025-06-10/clinical.tsv")
+subtypingData <- read.csv("subtypes.csv")
+```
+
+```{r}
+#factors of interest: demographic.age_at_index, age at diagnosis, days to birth, demographic.race
+```
+
+```{r}
+# creating "time" and "event" columns and converting to numeric
+survivalData <- survivalData |>
+  mutate(
+    demographic.days_to_death = as.numeric(demographic.days_to_death),
+    cases.days_to_lost_to_followup = as.numeric(cases.days_to_lost_to_followup),
+    time = ifelse(
+      demographic.vital_status == "Dead",
+      demographic.days_to_death,
+      cases.days_to_lost_to_followup
+    ),
+    event = ifelse(demographic.vital_status == "Dead", 1, 0)
+  )
+
+#since data on patients lost to followup is very incomplete, temporarily to set a study_cutoff_date as the maximum days_to_death, doesn't take into account early censoring
+
+max_death <- max(survivalData$demographic.days_to_death, na.rm = TRUE)
+survivalData <- survivalData|>
+  mutate(time = ifelse(
+    is.na(time),
+    max_death,
+    time
+  ))
+```
+
+```{r}
+summary(survivalData$time)
+table(survivalData$event)
+```
+
+```{r}
+# Create a Surv() object:
+surv_obj <- Surv(time = survivalData$time, event = survivalData$event)
+
+# Fit KM curves separately by race:
+km_fit <- survfit(surv_obj ~ demographic.race, data = survivalData)
+
+# Plot:
+
+ggsurvplot(
+  km_fit,
+  data = survivalData,
+  risk.table = TRUE,
+  pval = TRUE,
+  xlab = "Time (days)",
+  ylab = "Survival probability",
+  legend.title = "Race",
+  surv.median.line = "hv"
+)
+
+```
+
+```{r}
+# Histogram of distribution of patient age
+ggplot(survivalData, aes(x = demographic.age_at_index)) +
+  geom_histogram(binwidth = 5, fill = "skyblue", color = "black") +
+  labs(x = "Age", y = "Number of patients", title = "Distribution of Patient Age")
+```
+
+```{r}
+# Fit Cox model:
+
+# Make sure race is a factor, with a reference level:
+survivalData$demographic.race <- factor(
+  survivalData$demographic.race,
+  levels = c("white", "black or african american", "asian", "american indian or alaska native", "native hawaiian or other pacific islander", "other", "Unknown", "not allowed to collect", "not reported"))
+
+cox_fit <- coxph(
+  Surv(time, event) ~ demographic.age_at_index + demographic.race,
+  data = survivalData)
+
+summary(cox_fit)
+```
+
+Hazard ratios (exp(coef)) greater than 1 indicate an increased risk, while hazard ratios less than 1 indicate a decreased risk.
+
+```{r}
+# Test proportional hazards:
+ph_test <- cox.zph(cox_fit)
+print(ph_test)
+plot(ph_test)  # Schoenfeld residuals; look for non‐zero slopes
+```
+
+```{r}
+# interaction model between age and race
+coxph(Surv(time, event) ~ demographic.age_at_index * demographic.race, data = survivalData)
+```
+
+```{r}
+#Code to extract data from TCGA files
+
+getwd()
+subset_dir <- "TCGA-data_10:10:24_RNAandmiRNA"
+
+# Find all files ending in .tsv recursively
+tsv_files <- list.files(
+  path = subset_dir,
+  pattern = "\\.tsv$",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+# Filter to make sure we're only keeping files (not directories or symlinks)
+tsv_files <- tsv_files[file.info(tsv_files)$isdir == FALSE]
+# Select only files with rna_seq in name
+rna_files <- tsv_files[grepl("rna_seq", tsv_files)]
+print(length(rna_files))
+
+# Loop through each file and extract the gene_id and tpm, which we can use to track all of the genes across all of the individuals
+
+rna_list <- list()
+for (file in rna_files) {
+  dat <- read.delim(file, header=TRUE, sep="\t", comment.char="#")
+  dat <- dat[, c("gene_id", "tpm_unstranded")]
+
+  fname <- basename(file)
+  file_id <- sub("\\..*$", "", fname)    # yields "0a3cde41-87f6-49bb-b6fa-0e9e0f5e8102"
+
+  colnames(dat)[2] <- file_id
+  rna_list[[file_id]] <- dat
+}
+# This will create a table with gene_id as the first column and each sample in columns 2:
+rna_expression_combined <- Reduce(function(x, y) merge(x, y, by = "gene_id", all = TRUE), rna_list)
+
+# Create a column of cleaned ENSEMBL ids (remove version)
+rna_expression_combined$ensembl_gene_id <- sub("\\.\\d+$", "",rna_expression_combined$gene_id)
+
+mart <- biomaRt::useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                         dataset = "hsapiens_gene_ensembl",
+                         host = "https://www.ensembl.org")
+
+genes <- getBM(
+  filters = "ensembl_gene_id",
+  attributes = c("ensembl_gene_id", "entrezgene_id", "hgnc_symbol"),
+  values = rna_expression_combined$ensembl_gene_id,
+  mart = mart
+)
+
+# Check for duplicated values in the entrez or gene symbol columns
+genes %>%
+  group_by(ensembl_gene_id) %>%
+  summarise(
+    n_entrez = n_distinct(entrezgene_id, na.rm = TRUE),
+    n_symbol = n_distinct(hgnc_symbol, na.rm = TRUE),
+    .groups = "drop"
+    ) %>%
+  filter(n_entrez > 1 | n_symbol > 1)
+
+bad <- genes %>%
+  group_by(entrezgene_id) %>%
+  summarise(
+    n_entrez = n_distinct(ensembl_gene_id, na.rm = TRUE),
+    .groups = "drop"
+    ) %>%
+  filter(n_entrez > 1)
+
+# Remove duplicated ENSEMBL --> entrez mappings by retaining the shortest
+# entrez id (most likely to be a real gene rather than a LOC)
+genes_clean <- genes %>%
+  # Step 1: Keep shortest entrez ID per ensembl ID
+  mutate(entrez_length = nchar(as.character(entrezgene_id))) %>%
+  group_by(ensembl_gene_id) %>%
+  slice_min(entrez_length, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(-entrez_length) %>%
+
+  # Step 2: Remove duplicate entrez IDs if the symbol is blank or NA
+  group_by(entrezgene_id) %>%
+  filter(!(n() > 1 & (hgnc_symbol == "" | is.na(hgnc_symbol)))) %>%
+  ungroup() %>%
+
+  # Step 3: For remaining entrezgene_id duplicates, keep the shortest symbol, or first alphabetically if tied
+  mutate(symbol_length = nchar(hgnc_symbol)) %>%
+  group_by(entrezgene_id) %>%
+  arrange(symbol_length, hgnc_symbol) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select(-symbol_length)
+
+# Join to add 'name' from lookup table into rna_expression_combined
+rna_expression_harmonized <- rna_expression_combined %>%
+  left_join(genes_clean, by = "ensembl_gene_id")
+
+# Remove rows where entrez_ids are NA or match the duplicated IDs to remove
+rna_expression_filtered <- rna_expression_harmonized[!is.na(rna_expression_harmonized$entrezgene_id), ]
+
+
+library("rjson")
+json_file <- "metadata.repository.2025-06-11.json"
+json_data <- fromJSON(paste(readLines(json_file), collapse=""))
+json_data[[1]][["file_name"]]
+
+# 2) Extract file_name and case_id for _all_ records:
+file_names <- sapply(json_data, `[[`, "file_name")
+
+case_ids <- sapply(json_data, function(x) {
+  # If there might be >1 associated_entities, pick the first:
+  x[["associated_entities"]][[1]][["case_id"]]
+})
+
+meta <- data.frame(
+  file_name = file_names,
+  case_id   = case_ids,
+  stringsAsFactors = FALSE
+)
+meta$file_id <- sub("\\..*$", "", meta$file_name)
+
+joined <- subtypingData |>
+  left_join(meta,
+            by = c("case_id" = "file_id"))
+
+final_joined <- survivalData |>
+  left_join(joined,
+            by = c("cases.case_id" = "case_id.y"))
+
+```
+
+```{r}
+# Survival Analysis
+# Create a Surv() object:
+surv_obj2 <- Surv(time = final_joined$time, event = final_joined$event)
+
+# Fit KM curves separately by subtyping mechanism:
+km_fit <- survfit(surv_obj2 ~ ConsensusOV, data = final_joined)
+
+# Plot:
+ggsurvplot(
+  km_fit,
+  data = final_joined,
+  risk.table = TRUE,
+  pval = TRUE,
+  xlab = "Time (days)",
+  ylab = "Survival probability",
+  legend.title = "ConsensusOV",
+  surv.median.line = "hv"
+)
+```
+
+```{r}
+# Fit Cox model:
+
+cox_fit_consensus <- coxph(
+  Surv(time, event) ~ ConsensusOV,
+  data = final_joined)
+
+summary(cox_fit_consensus)
+```
+
+Hazard ratios (exp(coef)) greater than 1 indicate an increased risk, while hazard ratios less than 1 indicate a decreased risk.
+
+```{r}
+# Test proportional hazards:
+ph_test_consensus <- cox.zph(cox_fit_consensus)
+print(ph_test_consensus)
+plot(ph_test_consensus)  # Schoenfeld residuals; look for non‐zero slopes
+```
+
+# miRNA survival analysis
+
+```{r}
+##  Joining miRNA_expression_combined_normalized dataset and clinical dataset
+library("rjson")
+#importing the metadata json
+mirna_json_file <- "mirna_metadata.repository.2025-06-23.json"
+mirna_json_data <- fromJSON(paste(readLines(mirna_json_file), collapse=""))
+mirna_json_data[[1]][["file_name"]]
+
+#importing the mirna clinical data
+mirna_clinical <- readr::read_tsv("mirna_clinical.tsv")
+#importing expression data
+mirna_expression_combined_normalized <- read.csv("mirna_expression_combined_normalized.csv")
+old <- names(mirna_expression_combined_normalized)
+new <- sub("^X([0-9])", "\\1", old)   # remove X only when followed by a digit
+names(mirna_expression_combined_normalized) <- new
+library(tidyr)
+library(dplyr)
+
+# pivoting mirna_expression_data to long
+mirna_expr_long <- mirna_expression_combined_normalized |>
+  pivot_longer(
+    cols      = -miRNA_ID,
+    names_to  = "file_name",
+    values_to = "tpm"
+  )
+head(mirna_expr_long)
+#retrieving filename and caseids from metadata
+
+mirna_metadata_table <- readr::read_tsv("mirna_metadata_table.tsv")
+head(mirna_metadata_table)
+
+library(stringr)
+
+uuid_pattern <- "^([0-9a-f]{8})\\.([0-9a-f]{4})\\.([0-9a-f]{4})\\.([0-9a-f]{4})\\.([0-9a-f]{12})"
+
+mirna_expr_long <- mirna_expr_long %>% 
+  mutate(file_name = str_replace(
+    file_name,
+    uuid_pattern,
+    "\\1-\\2-\\3-\\4-\\5"        # replace the first 4 dots with dashes
+  ))
+# Join filename name from mirna_long with from metadata:
+
+expr_with_case <- mirna_expr_long |>
+  left_join(mirna_metadata_table,
+            by = c("file_name" = "file_name"))
+head(expr_with_case)
+
+# Join expr_with_case with mirna_clinical by case_id to obtain final mirna survival data
+
+mirna_clin_expr <- mirna_clinical |>
+  left_join(expr_with_case,
+            by = c("cases.case_id" = "case_id"),  relationship = "many-to-many")
+
+# creating "time" and "event" columns and converting to numeric
+
+mirna_clin_expr <- mirna_clin_expr |>
+  mutate(
+    demographic.days_to_death = as.numeric(demographic.days_to_death),
+    cases.days_to_lost_to_followup = as.numeric(cases.days_to_lost_to_followup),
+    time = ifelse(
+      demographic.vital_status == "Dead",
+      demographic.days_to_death,
+      cases.days_to_lost_to_followup
+    ),
+    event = ifelse(demographic.vital_status == "Dead", 1, 0)
+  )
+```
+
+```{r}
+#since data on patients lost to followup is very incomplete, temporarily to set a study_cutoff_date as the maximum days_to_death, doesn't take into account early censoring
+
+# look more closely at followup.tsv
+max_death_clin <- max(mirna_clin_expr$demographic.days_to_death, na.rm = TRUE)
+mirna_clin_expr <- mirna_clin_expr|>
+  mutate(time = ifelse(
+    is.na(time),
+    max_death_clin,
+    time
+  ))
+
+# Survival Analysis
+
+# preliminary step: filter to Hildana's final 10 miRNAs
+
+hildana_subset <- mirna_clin_expr |>
+  filter(miRNA_ID==c("hsa-let-7c", "hsa-mir-30d", "hsa-let-7i", "hsa-let-7g", "hsa-mir-21", "hsa-mir-152", "hsa-mir-340", "hsa-mir-99b", "hsa-mir-99a", "
+hsa-mir-27a"))
+# Create a Surv() object:
+surv_obj3 <- Surv(time = hildana_subset$time, event = hildana_subset$event)
+
+# Fit KM curves separately by subtyping mechanism:
+mirna_km_fit <- survfit(surv_obj3 ~ miRNA_ID, data = hildana_subset)
+
+# Plot:
+ggsurvplot(
+  mirna_km_fit,
+  data = hildana_subset,
+  risk.table = TRUE,
+  pval = TRUE,
+  xlab = "Time (days)",
+  ylab = "Survival probability",
+  legend.title = "miRNA_ID",
+  surv.median.line = "hv"
+)
+```
+
+```{r}
+# KM on all sub types
+surv_obj4 <- Surv(time = mirna_clin_expr$time, event = mirna_clin_expr$event)
+
+mirna_km_fit_all <- survfit(surv_obj4 ~ miRNA_ID, data = mirna_clin_expr)
+
+# Plot:
+ggsurvplot(
+  mirna_km_fit,
+  data = mirna_clin_expr,
+  risk.table = TRUE,
+  pval = TRUE,
+  xlab = "Time (days)",
+  ylab = "Survival probability",
+  legend.title = "miRNA_ID",
+  surv.median.line = "hv"
+)
+```
+
