@@ -1,0 +1,113 @@
+---
+title: "data_subtyping_RNA"
+format: html
+---
+
+```{r}
+library(DESeq2)
+library(biomaRt)
+library(dplyr)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(DESeq2)
+library(ggplot2)
+library(tidyr)
+library(consensusOV)
+library(tidyverse)
+library(genefu)
+options(scipen = 999) 
+```
+
+```{r}
+subset_dir <- "/Users/student/Documents/Data Pre Processing - Consensus OV/TCGA-data_10:10:24_RNAandmiRNA"
+tsv_files <- list.files(subset_dir, pattern = "\\.tsv$", recursive = TRUE, full.names = TRUE)
+rna_files <- tsv_files[grepl("rna_seq", tsv_files)]
+
+rna_list <- list()
+
+for (file in rna_files) {
+  temp_data <- read.delim(file, header = TRUE, sep = "\t", comment.char = "#")
+  temp_data <- temp_data[, c("gene_id", "tpm_unstranded")] #gene_name, gene_type, raw read counts (for unstranded and stranded, maybe useful in normalization?) -- are less relevant in classification using consensusOV
+  sample_name <- basename(file) 
+  colnames(temp_data)[2] <- sample_name 
+  rna_list[[sample_name]] <- temp_data
+}
+
+rna_expression_combined <- Reduce(function(x, y) merge(x, y, by = "gene_id", all = TRUE), rna_list)
+
+rna_expression_combined_unedited <- rna_expression_combined
+```
+
+```{r}
+# resetting step
+rna_expression_combined <- rna_expression_combined_unedited
+# Remove version numbers from Ensembl IDs
+# rna_expression_combined$gene_id <- sub("\\..*", "", rna_expression_combined$gene_id)
+
+```
+
+```{r}
+# USING biomaRt to obtain gene expression data in entrez and gene symbol
+# Connect to the Ensembl database
+mart <- useEnsembl("ensembl", dataset = "hsapiens_gene_ensembl", version = 113)
+# have tried versions 113, 110, 105, 99, 98. earlier versions perform better but at what cost?
+
+# Use the 'ensembl_gene_id_version' attribute and filter
+mapping <- getBM(
+  attributes = c("ensembl_gene_id_version", "entrezgene_id", "external_gene_name"),
+  filters = "ensembl_gene_id_version",
+  values = rna_expression_combined$gene_id,
+  mart = mart
+)
+
+# Merge the mapping back into your data
+rna_expression_combined <- merge(
+  rna_expression_combined, mapping,
+  by.x = "gene_id", by.y = "ensembl_gene_id_version",
+  all.x = TRUE
+)
+
+# converting to matrix
+
+subset_data_matrix <- as.matrix(
+  rna_expression_combined[, -c(1, ncol(rna_expression_combined))]
+)
+
+# Extract entrez_ids and assign to row names
+entrez_ids <- as.character(rna_expression_combined$entrezgene_id)
+rownames(subset_data_matrix) <- entrez_ids
+# Remove any 'X' prefix if needed
+rownames(subset_data_matrix) <- sub("^X", "", rownames(subset_data_matrix))
+```
+
+
+SUBTYPING ANALYSIS
+
+```{r subtyping}
+bentink.subtypes <- get.subtypes(subset_data_matrix, entrez_ids, method = "Bentink")
+bentink.subtypes$Bentink.subtypes
+konecny.subtypes <- get.subtypes(subset_data_matrix, entrez_ids, method = "Konecny")
+konecny.subtypes$Konecny.subtypes
+helland.subtypes <- get.subtypes(subset_data_matrix, entrez_ids, method = "Helland")
+helland.subtypes$Helland.subtypes
+```
+
+
+```{r}
+#downgrading matrixStats to resolve compatibility issues
+#remotes::install_version("matrixStats", version="1.1.0") # restart your session and run previous scripts
+library(matrixStats)
+
+verhaak.subtypes <- get.subtypes(subset_data_matrix, entrez_ids, method = "Verhaak")
+verhaak.subtypes$Verhaak.subtypes
+```
+
+```{r}
+#consensusOV
+
+consensus.subtypes <- get.subtypes(subset_data_matrix, entrez_ids, method = "consensusOV")
+consensus.subtypes$consensusOV.subtypes
+```
+```
+
+

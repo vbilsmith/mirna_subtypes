@@ -1,0 +1,221 @@
+---
+title: "data_subtyping_RNA"
+format: html
+---
+
+```{r}
+install.packages("stringi")
+library(DESeq2)
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+source("https://bioconductor.org/biocLite.R")
+BiocManager::install("biomaRt")
+library(biomaRt)
+BiocManager::install("org.Hs.eg.db")
+library(org.Hs.eg.db)
+
+# Installing the release version from Bioconductor:
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("consensusOV")
+
+library(dplyr)
+library(AnnotationDbi)
+library(DESeq2)
+library(ggplot2)
+library(tidyr)
+library(consensusOV)
+library(tidyverse)
+library(genefu)
+options(scipen = 999) 
+```
+
+```{r}
+getwd()
+subset_dir <- "../data/gdc_download_20250330_115711.237016"
+
+# Find all files ending in .tsv recursively
+tsv_files <- list.files(
+  path = subset_dir,
+  pattern = "\\.tsv$",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+# Filter to make sure we're only keeping files (not directories or symlinks)
+tsv_files <- tsv_files[file.info(tsv_files)$isdir == FALSE]
+
+# Select files with rna_seq in name
+rna_files <- tsv_files[grepl("rna_seq", tsv_files)]
+
+# I think this loop is going through each file and pulling the gene_id and tpm, which we can use to track all of the genes across all of the individuals
+rna_list <- list()
+for (file in rna_files) {
+  temp_data <- read.delim(file, header = TRUE, sep = "\t", comment.char = "#")
+  temp_data <- temp_data[, c("gene_id", "tpm_unstranded")] #gene_name, gene_type, raw read counts (for unstranded and stranded, maybe useful in normalization?) -- are less relevant in classification using consensusOV
+  sample_name <- basename(file) 
+  colnames(temp_data)[2] <- sample_name 
+  rna_list[[sample_name]] <- temp_data
+}
+
+# This will create a table with gene_id as the first column and each sample
+# in columns 2:
+rna_expression_combined <- Reduce(function(x, y) merge(x, y, by = "gene_id", all = TRUE), rna_list)
+
+# Create a column of cleaned ENSEMBL ids (remove version)
+rna_expression_combined$ensembl_gene_id <- sub("\\.\\d+$", "",rna_expression_combined$gene_id)
+
+#--------------------------------------------------------------------------
+#map identifiers/ convert between Ensembl gene ID and Entrez gene id/symbol: https://gist.github.com/dyndna/632059043663e257070548b08236de75 
+
+
+convertIDs_flexible <- function(ensembl_ids, use_mart = TRUE, ifMultiple = c("putNA", "useFirst")) {
+  library(AnnotationDbi)
+  library(org.Hs.eg.db)
+  if (use_mart) library(biomaRt)
+
+  ifMultiple <- match.arg(ifMultiple)
+
+  # Strip Ensembl version suffixes
+  ensembl_clean <- sub("\\.\\d+$", "", ensembl_ids)
+
+  # Try org.Hs.eg.db first
+  message("Mapping with org.Hs.eg.db...")
+  org_map <- AnnotationDbi::select(
+    org.Hs.eg.db,
+    keys = ensembl_clean,
+    keytype = "ENSEMBL",
+    columns = c("ENSEMBL", "ENTREZID", "SYMBOL")
+  )
+
+  # Clean according to ifMultiple rule
+  if (ifMultiple == "putNA") {
+    dupes <- org_map$ENSEMBL[duplicated(org_map$ENSEMBL)]
+    org_map <- org_map[!org_map$ENSEMBL %in% dupes, ]
+  } else if (ifMultiple == "useFirst") {
+    org_map <- org_map[!duplicated(org_map$ENSEMBL), ]
+  }
+
+  # Match org mappings to input
+  out <- data.frame(
+    original_id = ensembl_ids,
+    ENSEMBLID = ensembl_clean,
+    entrez_id = NA,
+    gene_symbol = NA,
+    stringsAsFactors = FALSE
+  )
+
+  matched_idx <- match(out$ENSEMBLID, org_map$ENSEMBL)
+  out$entrez_id <- org_map$ENTREZID[matched_idx]
+  out$gene_symbol <- org_map$SYMBOL[matched_idx]
+
+  # If biomaRt is enabled, fill in missing values
+  if (use_mart && any(is.na(out$entrez_id))) {
+    message("Falling back to biomaRt for missing mappings...")
+
+    ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
+
+    missing_ids <- unique(out$ENSEMBLID[is.na(out$entrez_id)])
+    bm_results <- getBM(
+      attributes = c("ensembl_gene_id", "entrezgene_id", "hgnc_symbol"),
+      filters = "ensembl_gene_id",
+      values = missing_ids,
+      mart = ensembl
+    )
+
+    bm_results <- bm_results[!duplicated(bm_results$ensembl_gene_id), ]
+
+    bm_idx <- match(out$ENSEMBLID, bm_results$ensembl_gene_id)
+    out$entrez_id[is.na(out$entrez_id)] <- bm_results$entrezgene_id[bm_idx[is.na(out$entrez_id)]]
+    out$gene_symbol[is.na(out$gene_symbol)] <- bm_results$hgnc_symbol[bm_idx[is.na(out$gene_symbol)]]
+  }
+
+  return(out)
+}
+
+
+
+# create reference table to map gene ids onto related terms
+gene_info <- data.frame("gene_id" = rna_expression_combined$gene_id, #variants from original data 
+                        "ENSEMBLID" = sub("\\..*", "",
+                                        rna_expression_combined$gene_id))
+
+gene_info$entrez_id <- convertIDs(
+  ids = gene_info$ENSEMBLID, 
+  from = "ENSEMBL", 
+  to = "ENTREZID", 
+  db = org.Hs.eg.db
+)
+
+rna_expression_combined$gene_symbol <- convertIDs_flexible(
+  ids = rna_expression_combined$ensembl_gene_id, 
+  from = "ENSEMBL", 
+  to = "SYMBOL", 
+  db = org.Hs.eg.db
+)
+
+
+
+```
+
+
+
+
+```{r}
+# Define the duplicated IDs to remove
+ids_to_remove <- c("29994", "64852", "8490")
+
+# Remove rows where entrez_ids are NA or match the duplicated IDs to remove
+rna_expression_filtered_without_NAandREPgenes <- rna_expression_filtered[!is.na(rna_expression_filtered$entrez_id) & 
+                                       !rna_expression_filtered$entrez_id %in% ids_to_remove, ]
+
+
+# filtering the data. we only need geneid and expression for each patients in wide format
+subset_data <- rna_expression_combined |>
+  dplyr::select(
+    'entrezgene_id',
+  'c42ab178-9ded-405c-8eab-69583c4b1ad0.rna_seq.augmented_star_gene_counts.tsv', '861aa222-1133-4423-9746-6a0d1b8e5163.rna_seq.augmented_star_gene_counts.tsv', 'b4388ff2-9482-41b4-a80b-a361ec3ef4d8.rna_seq.augmented_star_gene_counts.tsv', 'd905f784-10c0-466f-b2a9-58b12bf69e1d.rna_seq.augmented_star_gene_counts.tsv', '95184079-0806-49b9-8bf7-edd8aaca0ba2.rna_seq.augmented_star_gene_counts.tsv')
+ 
+# converting to matrix
+
+subset_data_matrix <- as.matrix(subset_data [-1])  # Assuming 'entrez_id' is the first column
+#storage.mode(subset_data_matrix) <- "numeric" 
+
+# Extract entrez_ids and assign to row names
+entrez_ids <- as.character(subset_data$entrezgene_id)
+rownames(subset_data_matrix) <- entrez_ids
+# Remove any 'X' prefix if needed
+rownames(subset_data_matrix) <- sub("^X", "", rownames(subset_data_matrix))
+```
+
+
+SUBTYPING ANALYSIS
+
+```{r subtyping}
+bentink.subtypes <- get.subtypes(subset_data_matrix, entrez_ids, method = "Bentink")
+bentink.subtypes$Bentink.subtypes
+get.konecny.subtypes(data_matrix, entrez_ids)
+konecny.subtypes$Konecny.subtypes
+helland.subtypes <- get.subtypes(subset_data_matrix, entrez_ids, method = "Helland")
+helland.subtypes$Helland.subtypes
+
+```
+
+```{r}
+#downgrading matrixStats to resolve compatibility issues--- uncomment the following and try if you face problem with the package
+#remotes::install_version("matrixStats", version="1.1.0") # restart your session and run previous scripts
+library(matrixStats)
+
+verhaak.subtypes <- get.subtypes(subset_data_matrix, entrez_ids, method = "Verhaak")
+verhaak.subtypes$Verhaak.subtypes
+```
+
+```{r}
+#consensusOV
+
+consensus.subtypes <- get.subtypes(subset_data_matrix, entrez_ids, method = "consensusOV")
+consensus.subtypes$consensusOV.subtypes
+```
+```
+
+
