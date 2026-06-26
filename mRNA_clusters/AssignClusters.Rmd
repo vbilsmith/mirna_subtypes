@@ -7,11 +7,18 @@ Install and then import packages
 
 ```{r Install}
 #source("https://bioconductor.org/biocLite.R")
-if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-BiocManager::install("biomaRt")
-BiocManager::install("org.Hs.eg.db")
-BiocManager::install("consensusOV")
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+
+bioc_packages <- c("biomaRt", "org.Hs.eg.db", "consensusOV")
+missing_bioc_packages <- bioc_packages[
+  !vapply(bioc_packages, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(missing_bioc_packages) > 0) {
+  BiocManager::install(missing_bioc_packages)
+}
 ```
 
 Imports
@@ -26,7 +33,7 @@ library(genefu)
 
 ```{r Identify Files}
 getwd()
-subset_dir <- "data/gdc_download_20250330_115711.237016"
+subset_dir <- "../data/gdc_download_20250330_115711.237016"
 
 # Find all files ending in .tsv recursively
 tsv_files <- list.files(
@@ -148,14 +155,15 @@ rownames(data_matrix) <- rna_expression_filtered[, 427]
 ```
 
 ```{r}
+# The Konecky subtyping from ConsensusOV was not working, so we pull the 
+# xpression values associated with each cluster from the original paper's 
+# supplementary materials and use them instead
+
 library(readxl)
 
-file_path <- "data/jnci_JNCI_14_0249_s05.xls"
+file_path <- "../data/jnci_JNCI_14_0249_s05.xls"
 
-# List available sheets (optional, helpful to confirm what’s there)
-excel_sheets(file_path)
-
-# Read sheet 4 (as you originally intended)
+# Read sheet 4 (UCLA_Mayo_PAMlist)
 konecny.supplementary.data <- read_excel(file_path, sheet = 4)
 
 # Extract relevant columns (keep EntrezGeneID + 4 centroid columns)
@@ -241,14 +249,12 @@ get.konecny.subtypes.fixed <- function(expression.matrix, entrez.ids) {
 When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
 ```{r}
 bentink.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), method = "Bentink")
-bentink.subtypes$Bentink.subtypes
+
 konecny.subtypes <- get.konecny.subtypes.fixed(data_matrix, rownames(data_matrix))
-konecny.subtypes$Konecny.subtypes
+
 helland.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), method = "Helland")
-helland.subtypes$Helland.subtypes
 
 verhaak.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), method = "Verhaak")
-
 
 conc.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), "consensusOV")
 ```
@@ -261,54 +267,180 @@ table(verhaak.subtypes$Verhaak.subtypes)
 table(conc.subtypes$consensusOV.subtypes)
 ```
 
+Let's save the per-subtype assignments and scores in output:
 ```{r}
-# Assuming your matrix is called `consensus_matrix`
-# and has the columns: IMR_consensus, DIF_consensus, PRO_consensus, MES_consensus
+dir.create("output", showWarnings = FALSE)
 
-# Step 1: Get the max value per row
-row_max <- apply(conc.subtypes$rf.probs, 1, max, na.rm = TRUE)
+score_object_to_df <- function(score_object, assignments) {
+  n_samples <- length(assignments)
+  
+  if (is.matrix(score_object) || is.data.frame(score_object)) {
+    return(as.data.frame(score_object, check.names = FALSE))
+  }
+  
+  if (is.atomic(score_object) && length(score_object) == n_samples) {
+    return(data.frame(score = score_object, check.names = FALSE))
+  }
+  
+  if (!is.list(score_object)) {
+    stop("Score object is not a matrix, data frame, vector, or list.")
+  }
+  
+  score_parts <- list()
+  
+  for (part_name in names(score_object)) {
+    part <- score_object[[part_name]]
+    
+    if (is.matrix(part) || is.data.frame(part)) {
+      part_df <- as.data.frame(part, check.names = FALSE)
+      
+      if (nrow(part_df) == n_samples) {
+        score_parts[[part_name]] <- part_df
+      } else if (ncol(part_df) == n_samples) {
+        score_parts[[part_name]] <- as.data.frame(t(as.matrix(part_df)), check.names = FALSE)
+      }
+    } else if (is.atomic(part) && length(part) == n_samples) {
+      score_parts[[part_name]] <- data.frame(part, check.names = FALSE)
+      names(score_parts[[part_name]]) <- part_name
+    }
+  }
+  
+  if (length(score_parts) == 0) {
+    stop("No score table elements matched the number of samples.")
+  }
+  
+  do.call(cbind, score_parts)
+}
 
-# Step 2: Plot histogram
-hist(row_max,
-     breaks = 20,
-     col = "steelblue",
-     main = "Histogram of Max Consensus Scores per Row",
-     xlab = "Max Consensus Score",
-     ylab = "Count")
+make_subtype_export <- function(score_matrix, assignments) {
+  score_df <- score_object_to_df(score_matrix, assignments)
+  assignment_sample_ids <- names(assignments)
+  
+  if (
+    !is.null(assignment_sample_ids) &&
+    !is.null(colnames(score_df)) &&
+    all(assignment_sample_ids %in% colnames(score_df)) &&
+    !all(assignment_sample_ids %in% rownames(score_df))
+  ) {
+    score_df <- as.data.frame(t(as.matrix(score_df)), check.names = FALSE)
+  }
+  
+  numeric_score_cols <- vapply(score_df, is.numeric, logical(1))
+  
+  sample_ids <- rownames(score_df)
+  
+  if (is.null(sample_ids)) {
+    sample_ids <- seq_len(nrow(score_df))
+  }
+  
+  assignment_values <- as.character(assignments)
+  if (!is.null(assignment_sample_ids)) {
+    names(assignment_values) <- assignment_sample_ids
+  }
+  
+  if (!is.null(assignment_sample_ids) && all(sample_ids %in% assignment_sample_ids)) {
+    assignment_values <- assignment_values[sample_ids]
+  } else if (length(assignment_values) != length(sample_ids)) {
+    stop("Assignments and score matrix have different sample counts.")
+  }
+  
+  data.frame(
+    sample = sample_ids,
+    assigned_subtype = assignment_values,
+    max_score = apply(score_df[, numeric_score_cols, drop = FALSE], 1, max, na.rm = TRUE),
+    score_df,
+    row.names = NULL,
+    check.names = FALSE
+  )
+}
 
+write_assignment_export <- function(assignments, file) {
+  assignment_values <- as.character(assignments)
+  sample_ids <- names(assignments)
+  
+  if (is.null(sample_ids)) {
+    sample_ids <- seq_along(assignment_values)
+  }
+  
+  write.csv(
+    data.frame(
+      sample = sample_ids,
+      assigned_subtype = assignment_values,
+      row.names = NULL,
+      check.names = FALSE
+    ),
+    file,
+    row.names = FALSE
+  )
+}
 
-```
-```{r}
-# Let's say your matrix is called `consensus_matrix`
+write_subtype_export <- function(score_matrix, assignments, scores_file, assignment_file = NULL) {
+  if (!is.null(score_matrix)) {
+    export_df <- make_subtype_export(score_matrix, assignments)
+    write.csv(export_df, scores_file, row.names = FALSE)
+    return(export_df)
+  }
+  
+  if (is.null(assignment_file)) {
+    stop("No score table available for ", scores_file)
+  }
+  
+  write_assignment_export(assignments, assignment_file)
+  invisible(NULL)
+}
 
-consensus_matrix <- conc.subtypes$rf.probs
+konecny_export <- make_subtype_export(
+  konecny.subtypes$spearman.cc.vals,
+  konecny.subtypes$Konecny.subtypes
+)
+write.csv(konecny_export, "output/konecny_subtypes_scores.csv", row.names = FALSE)
 
-# Step 1: Find the name of the column with the max value per row
-max_col_names <- apply(consensus_matrix, 1, function(row) {
-  colnames(consensus_matrix)[which.max(row)]
-})
-
-# Step 2: Create a 2-column dataframe with row names preserved
-max_label_df <- data.frame(
-  sample = rownames(consensus_matrix),
-  max_label = max_col_names,
-  row.names = NULL,  # optional: removes row numbers
-  stringsAsFactors = FALSE
+helland_export <- write_subtype_export(
+  helland.subtypes$subtype.scores,
+  helland.subtypes$Helland.subtypes,
+  "output/helland_subtypes_scores.csv",
+  "output/helland_subtypes.csv"
 )
 
+verhaak_export <- write_subtype_export(
+  verhaak.subtypes$gsva.out,
+  verhaak.subtypes$Verhaak.subtypes,
+  "output/verhaak_subtypes_scores.csv"
+)
+
+if (!is.null(verhaak.subtypes$gsva.out)) {
+  write.csv(
+    as.data.frame(verhaak.subtypes$gsva.out, check.names = FALSE),
+    "output/verhaak_gsva_scores_raw.csv",
+    row.names = TRUE
+  )
+}
+
+bentink_export <- write_subtype_export(
+  bentink.subtypes$angio,
+  bentink.subtypes$Bentink.subtypes,
+  "output/bentink_subtypes_scores.csv"
+)
 
 ```
 
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+Identify the consensus assignment by ConsensusOV
+
 ```{r}
-write.csv(DataFrame("sample" = rownames(conc.subtypes$rf.probs),
-                    "type" = conc.subtypes$consensusOV.subtypes,
-                    "score" = row_max), 
-          "ConsensusOV_labels.csv",
-          row.names = FALSE)
+consensus_export <- make_subtype_export(
+  conc.subtypes$rf.probs,
+  conc.subtypes$consensusOV.subtypes
+)
 
-write.csv(DataFrame(conc.subtypes$rf.probs), "ConsensusOV_probs.csv",
-          row.names = TRUE)
+write.csv(consensus_export, "output/consensusOV_subtypes_scores.csv", row.names = FALSE)
 
+
+hist(
+  consensus_export$max_score,
+  breaks = 20,
+  col = "steelblue",
+  main = "Histogram of Max Consensus Scores per Row",
+  xlab = "Max Consensus Score",
+  ylab = "Count"
+)
 ```
-
