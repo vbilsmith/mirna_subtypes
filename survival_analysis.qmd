@@ -1,0 +1,41 @@
+---
+title: "survival_analysis"
+format: html
+editor: visual
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+## Running Code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+```{r}
+clinical_data <- read.csv("data/clinical.cart.2025-04-08/clinical.tsv", sep="\t")
+```
+
+You can add options to executable code like this
+
+```{r}
+status <- data.frame(
+  sample = clinical_data$cases.case_id,
+  is_alive = ifelse(clinical_data$demographic.vital_status == "Alive", 1, 0),
+  stringsAsFactors = FALSE
+)
+
+```
+
+```{r}
+assignment <- data.frame("sample" = rownames(conc.subtypes$rf.probs),
+                    "type" = conc.subtypes$consensusOV.subtypes,
+                    "score" = row_max)
+assignment$sample <- sub("\\.rna_seq.*", "", rownames(assignment))
+```
+
+The `echo: false` option disables the printing of code (only output is displayed).
+
+```{r}
+merged_df <- merge(status, assignment, by = "sample")
+```
