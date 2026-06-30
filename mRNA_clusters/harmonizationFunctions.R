@@ -7,14 +7,15 @@ first_non_missing <- function(x) {
   if (length(x) == 0) NA else x[[1]]
 }
 
+# Combines unique elements into a ;-separated string, or returns NA if
+# no elements are non-empty
 collapse_unique <- function(x) {
-  # Combines unique elements into a ;-separated string, or returns NA if
-  # no elements are non-empty
   x <- unique(x[!is.na(x) & x != ""])
   if (length(x) == 0) NA_character_ else paste(x, collapse = "; ")
 }
 
-
+# Parse the annotations. First it sets a default blank records, then it
+# extracts relevant annotations from the metadata and fills in as appropriate
 annotation_summary <- function(annotations) {
   if (length(annotations) == 0) {
     return(data.frame(
@@ -62,6 +63,8 @@ annotation_summary <- function(annotations) {
   )
 }
 
+# Streamline addition of multiple subtype columns by including the name of the
+# subtyping paradigm used for each call
 prefix_score_columns <- function(df, method) {
   keep <- c("sample", "assigned_subtype", "max_score")
   score_cols <- setdiff(names(df), keep)

@@ -3,7 +3,7 @@ library(jsonlite)
 library(stringr)
 
 # Read in the helper functions for harmonizing
-source("harmonizationFunctions.R")
+source("mRNA_clusters/harmonizationFunctions.R")
 
 # File locations
 metadata_file <- "data/metadata.cart.2025-03-30.json"
@@ -110,11 +110,18 @@ sample_level <- subtypes |>
     case_id
   )
 
+write.csv(
+  sample_level,
+  file.path(output_dir, "rna_subtypes_clinical_sample_level.csv"),
+  row.names = FALSE
+)
 
+# Check whether any samples have missing metadata
 missing_metadata <- sample_level |> filter(is.na(case_id))
 missing_clinical <- sample_level |>
   filter(!is.na(case_id), is.na(vital_status), is.na(primary_diagnosis))
 
+# Both of these should run without printing a warning
 if (nrow(missing_metadata) > 0) {
   warning(nrow(missing_metadata), " RNA subtype rows did not match metadata.")
 }
@@ -123,6 +130,7 @@ if (nrow(missing_clinical) > 0) {
   warning(nrow(missing_clinical), " RNA subtype rows matched metadata but not clinical.")
 }
 
+# Now we look at cluster assignment at the level of patient.
 # Keep all aliquots in the sample-level output. For case-level analyses, prefer
 # primary tumor samples (01) and then use a deterministic aliquot/file ordering.
 case_level <- sample_level |>
@@ -141,20 +149,15 @@ subtype_cols <- c(
   bentink = "bentink_subtype"
 )
 
-sample_confusion <- make_pairwise_confusion(sample_level, subtype_cols)
-case_confusion <- make_pairwise_confusion(case_level, subtype_cols)
-
-write.csv(
-  sample_level,
-  file.path(output_dir, "rna_subtypes_clinical_sample_level.csv"),
-  row.names = FALSE
-)
-
 write.csv(
   case_level,
   file.path(output_dir, "rna_subtypes_clinical_case_level.csv"),
   row.names = FALSE
 )
+
+# Now evaluate how well the different subtypes agree with each other
+sample_confusion <- make_pairwise_confusion(sample_level, subtype_cols)
+case_confusion <- make_pairwise_confusion(case_level, subtype_cols)
 
 write.csv(
   sample_confusion,
@@ -171,6 +174,38 @@ write.csv(
 write_pairwise_confusion_matrices(sample_confusion, "sample_level", output_dir)
 write_pairwise_confusion_matrices(case_confusion, "case_level", output_dir)
 
+# Flag the samples that were flagged as low quality in the metadata records
+low_qc_samples <- sample_level |>
+  filter(qc_flag) |>
+  arrange(case_submitter_id, sample_type_code, aliquot_barcode, sample) |>
+  select(
+    case_submitter_id,
+    sample_type_code,
+    sample_barcode,
+    aliquot_barcode,
+    sample,
+    qc_flag,
+    qc_dnu,
+    qc_center_failed,
+    qc_low_coverage,
+    qc_high_mitochondrial,
+    annotation_categories,
+    annotation_notes,
+    consensusOV_subtype,
+    konecny_subtype,
+    helland_subtype,
+    verhaak_subtype,
+    bentink_subtype
+  )
+
+write.csv(
+  low_qc_samples,
+  file.path(output_dir, "rna_low_qc_samples.csv"),
+  row.names = FALSE
+)
+
+# For the cases where we have multiple samples, do they agree? (Usually not from
+# the same tumor, so not necessarily going to be true, but worth checking)
 duplicate_cases <- sample_level |>
   count(case_submitter_id, sort = TRUE) |>
   filter(n > 1)
@@ -201,29 +236,6 @@ duplicate_case_details <- sample_level |>
     vital_status,
     figo_stage,
     tumor_grade
-  )
-
-low_qc_samples <- sample_level |>
-  filter(qc_flag) |>
-  arrange(case_submitter_id, sample_type_code, aliquot_barcode, sample) |>
-  select(
-    case_submitter_id,
-    sample_type_code,
-    sample_barcode,
-    aliquot_barcode,
-    sample,
-    qc_flag,
-    qc_dnu,
-    qc_center_failed,
-    qc_low_coverage,
-    qc_high_mitochondrial,
-    annotation_categories,
-    annotation_notes,
-    consensusOV_subtype,
-    konecny_subtype,
-    helland_subtype,
-    verhaak_subtype,
-    bentink_subtype
   )
 
 duplicate_case_comparison <- duplicate_case_details |>
@@ -267,12 +279,7 @@ write.csv(
   row.names = FALSE
 )
 
-write.csv(
-  low_qc_samples,
-  file.path(output_dir, "rna_low_qc_samples.csv"),
-  row.names = FALSE
-)
-
+# Print some summary stats
 message("Sample-level rows: ", nrow(sample_level))
 message("Case-level rows: ", nrow(case_level))
 message("Rows missing metadata: ", nrow(missing_metadata))
@@ -283,3 +290,4 @@ message(
   "Duplicate cases concordant across all subtype methods: ",
   sum(duplicate_case_comparison$all_methods_concordant)
 )
+
