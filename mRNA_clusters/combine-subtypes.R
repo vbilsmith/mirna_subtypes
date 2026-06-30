@@ -2,139 +2,25 @@ library(dplyr)
 library(jsonlite)
 library(stringr)
 
-`%||%` <- function(x, y) {
-  if (is.null(x)) y else x
-}
+# Read in the helper functions for harmonizing
+source("harmonizationFunctions.R")
 
-first_non_missing <- function(x) {
-  x <- x[!is.na(x) & x != "'--" & x != "--" & x != ""]
-  if (length(x) == 0) NA else x[[1]]
-}
-
-collapse_unique <- function(x) {
-  x <- unique(x[!is.na(x) & x != ""])
-  if (length(x) == 0) NA_character_ else paste(x, collapse = "; ")
-}
-
-annotation_summary <- function(annotations) {
-  if (length(annotations) == 0) {
-    return(data.frame(
-      qc_flag = FALSE,
-      qc_dnu = FALSE,
-      qc_center_failed = FALSE,
-      qc_low_coverage = FALSE,
-      qc_high_mitochondrial = FALSE,
-      noncanonical_flag = FALSE,
-      ovarian_triplet_flag = FALSE,
-      annotation_categories = NA_character_,
-      annotation_notes = NA_character_,
-      stringsAsFactors = FALSE
-    ))
-  }
-
-  categories <- vapply(
-    annotations,
-    function(annotation) annotation$category %||% NA_character_,
-    character(1)
-  )
-  notes <- vapply(
-    annotations,
-    function(annotation) annotation$notes %||% NA_character_,
-    character(1)
-  )
-  annotation_text <- paste(categories, notes, collapse = " ")
-
-  qc_dnu <- any(str_detect(categories, regex("Item flagged DNU", ignore_case = TRUE)))
-  qc_center_failed <- any(str_detect(categories, regex("Center QC failed", ignore_case = TRUE)))
-  qc_low_coverage <- any(str_detect(notes, regex("LOW 5/3 COVERAGE RATIO", ignore_case = TRUE)))
-  qc_high_mitochondrial <- any(str_detect(notes, regex("HIGH MITOCHONDRIAL CONTENT", ignore_case = TRUE)))
-
-  data.frame(
-    qc_flag = qc_dnu || qc_center_failed || qc_low_coverage || qc_high_mitochondrial,
-    qc_dnu = qc_dnu,
-    qc_center_failed = qc_center_failed,
-    qc_low_coverage = qc_low_coverage,
-    qc_high_mitochondrial = qc_high_mitochondrial,
-    noncanonical_flag = str_detect(annotation_text, regex("noncanonical", ignore_case = TRUE)),
-    ovarian_triplet_flag = str_detect(annotation_text, regex("ovarian? triplet", ignore_case = TRUE)),
-    annotation_categories = collapse_unique(categories),
-    annotation_notes = collapse_unique(notes),
-    stringsAsFactors = FALSE
-  )
-}
-
-prefix_score_columns <- function(df, method) {
-  keep <- c("sample", "assigned_subtype", "max_score")
-  score_cols <- setdiff(names(df), keep)
-  names(df)[names(df) == "assigned_subtype"] <- paste0(method, "_subtype")
-  names(df)[names(df) == "max_score"] <- paste0(method, "_max_score")
-  names(df)[names(df) %in% score_cols] <- paste0(method, "_", score_cols)
-  df
-}
-
-read_subtype_export <- function(file, method) {
-  read.csv(file, check.names = FALSE) |>
-    prefix_score_columns(method)
-}
-
-make_pairwise_confusion <- function(df, subtype_cols) {
-  method_pairs <- combn(names(subtype_cols), 2, simplify = FALSE)
-
-  bind_rows(lapply(method_pairs, function(method_pair) {
-    row_method <- method_pair[[1]]
-    column_method <- method_pair[[2]]
-    row_col <- subtype_cols[[row_method]]
-    column_col <- subtype_cols[[column_method]]
-
-    df |>
-      filter(!is.na(.data[[row_col]]), !is.na(.data[[column_col]])) |>
-      count(
-        row_subtype = .data[[row_col]],
-        column_subtype = .data[[column_col]],
-        name = "n"
-      ) |>
-      mutate(
-        row_method = row_method,
-        column_method = column_method,
-        .before = row_subtype
-      )
-  }))
-}
-
-write_pairwise_confusion_matrices <- function(confusion_df, level, output_dir) {
-  split_keys <- paste(confusion_df$row_method, confusion_df$column_method, sep = "_vs_")
-
-  invisible(lapply(split(confusion_df, split_keys), function(pair_df) {
-    matrix_df <- as.data.frame.matrix(xtabs(n ~ row_subtype + column_subtype, data = pair_df))
-    matrix_df <- cbind(row_subtype = row.names(matrix_df), matrix_df)
-    row.names(matrix_df) <- NULL
-
-    file_name <- paste0(
-      "rna_",
-      level,
-      "_confusion_",
-      pair_df$row_method[[1]],
-      "_vs_",
-      pair_df$column_method[[1]],
-      ".csv"
-    )
-
-    write.csv(matrix_df, file.path(output_dir, file_name), row.names = FALSE)
-  }))
-}
-
+# File locations
 metadata_file <- "data/metadata.cart.2025-03-30.json"
 clinical_file <- "data/clinical.cart.2025-04-08/clinical.tsv"
 output_dir <- "mRNA_clusters/output"
 
 metadata_raw <- fromJSON(metadata_file, simplifyVector = FALSE)
 
+# This uses an anonymous function that extracts information from each `record` 
+# extracted from the json metadata, combines with annotations, and stores in a df
+# The section most relevant to harmonizing clinical and RNA-Seq data is the
+# associated_entities list within each metadata_raw record
 rna_metadata <- bind_rows(lapply(metadata_raw, function(record) {
   entity <- record$associated_entities[[1]]
   aliquot_barcode <- entity$entity_submitter_id %||% NA_character_
-  annotations <- annotation_summary(record$annotations %||% list())
-
-  cbind(data.frame(
+  
+  base_metadata <- data.frame(
     file_id = record$file_id %||% NA_character_,
     file_name = record$file_name %||% NA_character_,
     case_id = entity$case_id %||% NA_character_,
@@ -144,9 +30,14 @@ rna_metadata <- bind_rows(lapply(metadata_raw, function(record) {
     case_submitter_id = str_sub(aliquot_barcode, 1, 12),
     sample_type_code = str_sub(aliquot_barcode, 14, 15),
     stringsAsFactors = FALSE
-  ), annotations)
+  )
+  
+  annotations <- annotation_summary(record$annotations %||% list())
+  
+  cbind(base_metadata, annotations)
 }))
 
+# Now read in the clinical data
 clinical <- read.delim(
   clinical_file,
   header = TRUE,
@@ -154,6 +45,17 @@ clinical <- read.delim(
   check.names = FALSE,
   na.strings = c("'--", "--", "")
 )
+
+# Check that the clinical case IDs overlap between the RNA-Seq metadata and the
+# clinical data
+overlap = intersect(rna_metadata$case_id, clinical$cases.case_id)
+cat("Metadata Records (RNA): ", nrow(rna_metadata))
+cat("Clinical Records: ", nrow(clinical))
+cat("Overlapping Case IDs: ", length(overlap))
+# We are seeing 417 overlapping samples/clinical IDs compared to 424 RNA records
+# That matches some of the calculations we make later as there are some cases with
+# multiple samples
+                                                       
 
 # The GDC clinical TSV has multiple rows per case when diagnoses/treatments repeat.
 # Collapse to one row per case for downstream joins.
@@ -176,6 +78,7 @@ clinical_cases <- clinical |>
     .groups = "drop"
   )
 
+# Read in the subtypes we assigned with consensusOV
 subtype_files <- list(
   consensusOV = file.path(output_dir, "consensusOV_subtypes_scores.csv"),
   konecny = file.path(output_dir, "konecny_subtypes_scores.csv"),
@@ -187,6 +90,7 @@ subtype_files <- list(
 subtype_tables <- Map(read_subtype_export, subtype_files, names(subtype_files))
 subtypes <- Reduce(function(x, y) full_join(x, y, by = "sample"), subtype_tables)
 
+# Generate sample-level subtype predictions
 sample_level <- subtypes |>
   left_join(rna_metadata, by = c("sample" = "file_name")) |>
   left_join(
@@ -205,6 +109,7 @@ sample_level <- subtypes |>
     case_submitter_id,
     case_id
   )
+
 
 missing_metadata <- sample_level |> filter(is.na(case_id))
 missing_clinical <- sample_level |>
