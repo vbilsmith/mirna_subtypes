@@ -1,0 +1,102 @@
+---
+title: "miRNA Preprocessing"
+subtitle: "TCGA miRNA — load, filter, normalize (Hildana, June 2026)"
+format: html
+editor: visual
+---
+
+## Goal
+
+Load raw TCGA miRNA read counts (497 samples), filter out non-informative miRNAs, and produce a normalized, log-transformed matrix for downstream clustering. The output `mirna_data/mirna_lcpm_matrix.rds` is the hand-off to `02_mirna_explore_clustering.qmd` and `03_mirna_nmf_final.qmd`.
+
+```{r}
+#| label: setup
+#| message: false
+library(tidyverse)
+library(edgeR)
+
+```
+
+## Load & combine miRNA counts
+
+```{r}
+#| label: load-counts
+mirna_dir   <- "TCGA-data_10:10:24_RNAandmiRNA"   # raw TCGA download (mRNA + miRNA)
+mirna_files <- list.files(mirna_dir, pattern = "mirna.*\\.txt$",
+                          recursive = TRUE, full.names = TRUE)
+
+# Read one file -> two columns: miRNA_ID and read_count (renamed to the sample)
+read_one_mirna <- function(file) {
+  d <- read.delim(file, sep = "\t", comment.char = "#")
+  if (!all(c("miRNA_ID", "read_count") %in% colnames(d))) {
+    cat("Skipping file, missing columns:", file, "\n")
+    return(NULL)
+  }
+  setNames(d[, c("miRNA_ID", "read_count")], c("miRNA_ID", basename(file)))
+}
+
+mirna_counts <- Reduce(function(x, y) merge(x, y, by = "miRNA_ID", all = TRUE),
+                       Filter(Negate(is.null), lapply(mirna_files, read_one_mirna)))
+mirna_counts[is.na(mirna_counts)] <- 0   # missing miRNA in a sample -> 0 reads
+
+dim(mirna_counts)   # 1881 miRNA x (1 ID + 497 samples)
+```
+
+## Filter zero-sum miRNAs
+
+Drop miRNAs with zero counts across **all** samples — they carry no information.
+
+```{r}
+#| label: filter-zeros
+mirna_keep <- rowSums(mirna_counts[-1]) >= 1
+cat("Dropped:", sum(!mirna_keep), "| Kept:", sum(mirna_keep), "\n")
+
+mirna_counts <- mirna_counts[mirna_keep, ]
+
+# Single transpose -> samples (rows) x miRNA (cols)
+mirna_mat <- t(as.matrix(mirna_counts[-1]))
+colnames(mirna_mat) <- mirna_counts$miRNA_ID
+dim(mirna_mat)   # 497 x 1560
+```
+
+```{r}
+#| label: qc-density
+# Distribution of per-miRNA expression sums (log scale)
+ggsave(
+  "mirna_plots/mirna_expression_sum_density.png",
+  ggplot(data.frame(s = colSums(mirna_mat)), aes(log(s))) +
+    geom_density(fill = "pink", color = "black", alpha = 0.6) +
+    labs(x = "log(Expression_Sum)", y = "Density") +
+    theme_minimal(),
+  width = 8, height = 6, dpi = 300
+)
+```
+
+## Normalize & log-transform
+
+`calcNormFactors` corrects for sequencing-depth differences between samples; `cpm(log = TRUE)` returns log2 counts-per-million.
+
+```{r}
+#| label: normalize
+# QC: total counts per sample before normalization
+mirna_sample_totals <- rowSums(mirna_mat)
+summary(mirna_sample_totals)
+
+png("mirna_plots/mirna_sample_total_counts_histogram.png", width = 1000, height = 800, res = 120)
+hist(mirna_sample_totals, breaks = 50,
+     main = "Distribution of Total miRNA Counts",
+     xlab = "Total mirna Counts per Sample")
+dev.off()
+
+# edgeR expects genes-as-rows, so feed the miRNA x sample orientation
+mirna_dge  <- calcNormFactors(DGEList(counts = t(mirna_mat)))
+mirna_lcpm <- cpm(mirna_dge, log = TRUE, prior.count = 1)   # miRNA x sample
+dim(mirna_lcpm)
+```
+
+## Save hand-off matrix
+
+```{r}
+#| label: save
+saveRDS(mirna_lcpm, "mirna_data/mirna_lcpm_matrix.rds")   # miRNA x sample, normalized + log
+```

@@ -1,0 +1,70 @@
+---
+title: "miRNA PCA"
+subtitle: "TCGA miRNA — principal component analysis (Hildana, June 2026)"
+format: html
+editor: visual
+---
+
+## Goal
+
+Explore structure in the normalized miRNA matrix with PCA. Diagnostic only — produces no cluster assignments. The scree plot shows how much variance each component captures, and the pairwise plot checks the first 5 components for separable structure.
+
+```{r}
+#| label: setup
+#| message: false
+library(tidyverse)
+library(factoextra)
+library(GGally)
+
+```
+
+## Load hand-off matrix
+
+```{r}
+#| label: load
+mirna_lcpm <- readRDS("mirna_data/mirna_lcpm_matrix.rds")   # miRNA x sample, normalized + log
+dim(mirna_lcpm)
+```
+
+## Run PCA
+
+`prcomp` expects observations as rows, so we transpose to samples x miRNA.
+
+```{r}
+#| label: pca
+mirna_pca <- prcomp(t(mirna_lcpm), center = TRUE, scale. = TRUE)
+```
+
+## Scree plot
+
+```{r}
+#| label: pca-scree
+ggsave(
+  "mirna_plots/mirna_pca_scree_plot.png",
+  fviz_eig(mirna_pca, addlabels = TRUE, ylim = c(0, 100), main = ""),
+  width = 8, height = 6, dpi = 300
+)
+```
+
+## Pairwise plot of PC1–PC5
+
+```{r}
+#| label: pca-pairwise
+mirna_pca_pairs <- as.data.frame(mirna_pca$x[, 1:5])
+colnames(mirna_pca_pairs) <- paste0("PC", 1:5)
+
+ggsave(
+  "mirna_plots/mirna_pca_pairwise_pc1_to_pc5.png",
+  ggpairs(mirna_pca_pairs, title = "Pairwise Plots of Principal Components 1-5"),
+  width = 12, height = 12, dpi = 300
+)
+```
+
+## Save PCA for reuse
+
+The k-means file projects its clusters onto these PCA axes, so save the result rather than recomputing.
+
+```{r}
+#| label: save
+saveRDS(mirna_pca, "mirna_data/mirna_pca.rds")
+```
