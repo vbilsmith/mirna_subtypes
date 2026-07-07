@@ -71,7 +71,47 @@ This analysis runs out of the `mRNA_clusters` directory.
 Run the `AssignClusters.Rmd` notebook or `AssignClusters.R` script to generate cluster assignments and scores for each sample.
 These outputs will be written to the `output` directory within `mRNA_clusters`
 
-After cluster assignments have been generated, run:
+## Identify miRNA Clusters
+
+The miRNA clustering workflow uses the miRNA files downloaded by the shared GDC
+pipeline:
+
+```text
+data/gdc_tcga_ov_omics/downloads/miRNA/
+data/gdc_tcga_ov_omics/mirna_file_sample_link.tsv
+```
+
+Run the miRNA notebooks in order:
+
+```bash
+quarto render miRNA_clusters/01_mirna_preprocess.qmd
+quarto render miRNA_clusters/02a_mirna_pca.qmd
+quarto render miRNA_clusters/02b_mirna_kmeans.qmd
+quarto render miRNA_clusters/02c_mirna_nmf.qmd
+```
+
+The preprocessing notebook writes the normalized handoff matrix and GDC sample
+metadata to:
+
+```text
+data/mirna_data/mirna_lcpm_matrix.rds
+data/mirna_data/mirna_sample_metadata.csv
+```
+
+The NMF notebook writes the miRNA subtype assignments to:
+
+```text
+miRNA_clusters/mirna_nmf_subtypes_k4.csv
+```
+
+That CSV is the default miRNA subtype input for harmonization. It should contain
+one row per clustered miRNA file/sample and a `cluster` column; the current
+pipeline also carries through GDC identifiers such as `file_name`,
+`case_submitter_id`, `sample_submitter_id`, and `aliquot_barcode`.
+
+## Harmonize Labels With Clinical Data
+
+After mRNA and miRNA cluster assignments have been generated, run:
 
 ```bash
 python3 scripts/run_gdc_omics_pipeline.py --skip-pull --harmonize-labels --survival
