@@ -1,11 +1,4 @@
----
-title: "R Notebook"
-output: html_notebook
----
-
-Install and then import packages
-
-```{r Install}
+## ----Install-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 #source("https://bioconductor.org/biocLite.R")
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
   install.packages("BiocManager")
@@ -30,20 +23,21 @@ if (length(missing_optional_bioc_packages) > 0) {
     silent = TRUE
   )
 }
-```
 
-Imports
-```{r Imports}
+
+## ----Imports-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 library(biomaRt)
 library(consensusOV)
 library(dplyr)
 library(genefu)
-```
+library(readxl)
+
+## -- Paths --
+subset_dir <- "data/gdc_tcga_ov_omics/downloads/mRNA"
+konecny_file_path <- "data/jnci_JNCI_14_0249_s05.xls"
 
 
-```{r Identify Files}
-getwd()
-subset_dir <- "../data/gdc_tcga_ov_omics/downloads/mRNA"
+## ----Identify Files----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 # Find all files ending in .tsv recursively
 tsv_files <- list.files(
@@ -58,16 +52,15 @@ tsv_files <- tsv_files[file.info(tsv_files)$isdir == FALSE]
 
 print(length(tsv_files))
 
-```
 
-```{r}
+
+## ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # Select only files with rna_seq in name
 rna_files <- tsv_files[grepl("rna_seq", tsv_files)]
 print(length(rna_files))
-```
 
 
-```{r Create Table}
+## ----Create Table------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # Loop through each file and extract the gene_id and tpm, which we can use to track all of the genes across all of the individuals
 
 rna_list <- list()
@@ -85,9 +78,9 @@ rna_expression_combined <- Reduce(function(x, y) merge(x, y, by = "gene_id", all
 # Create a column of cleaned ENSEMBL ids (remove version)
 rna_expression_combined$ensembl_gene_id <- sub("\\.\\d+$", "",rna_expression_combined$gene_id)
 
-```
 
-```{r Map Ensembl IDs onto Entrez and Gene Symbol}
+
+## ----Map Ensembl IDs onto Entrez and Gene Symbol-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 map_ensembl_ids <- function(
   ensembl_ids,
   cache_file = "output/ensembl_gene_mapping.csv",
@@ -193,10 +186,9 @@ map_ensembl_ids <- function(
 }
 
 genes <- map_ensembl_ids(rna_expression_combined$ensembl_gene_id)
-```
 
 
-```{r}
+## ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # Check for duplicated values in the entrez or gene symbol columns
 genes %>%
   group_by(ensembl_gene_id) %>%
@@ -262,26 +254,28 @@ rna_expression_filtered <- rna_expression_harmonized %>%
     .groups = "drop"
   )
 
-```
 
-```{r}
+
+## ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # filtering the data. we only need geneid and expression for each patients in wide format
 data_matrix <- as.matrix(rna_expression_filtered[, sample_columns, drop = FALSE])
+
+
+## ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Extract entrez_ids and assign to row names
 rownames(data_matrix) <- rna_expression_filtered$entrezgene_id
 
-```
 
-```{r}
+
+## ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # The Konecky subtyping from ConsensusOV was not working, so we pull the 
 # xpression values associated with each cluster from the original paper's 
 # supplementary materials and use them instead
 
-library(readxl)
 
-file_path <- "../data/jnci_JNCI_14_0249_s05.xls"
 
 # Read sheet 4 (UCLA_Mayo_PAMlist)
-konecny.supplementary.data <- read_excel(file_path, sheet = 4)
+konecny.supplementary.data <- read_excel(konecny_file_path, sheet = 4)
 
 # Extract relevant columns (keep EntrezGeneID + 4 centroid columns)
 konecny.centroids.raw <- konecny.supplementary.data[, c(2, 4:7)]
@@ -305,11 +299,9 @@ konecny.centroids$EntrezID <- NULL
 
 shared_genes <- intersect(rownames(konecny.centroids), rownames(data_matrix))
 
-```
 
 
-
-```{r}
+## ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 get.konecny.subtypes.fixed <- function(expression.matrix, entrez.ids) {
   
   # Z-score normalize each gene (row)
@@ -360,11 +352,9 @@ get.konecny.subtypes.fixed <- function(expression.matrix, entrez.ids) {
   return(list(Konecny.subtypes = subtypes, spearman.cc.vals = t(spearman.cc.vals)))
 }
 
-```
 
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
-```{r}
+## ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 bentink.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), method = "Bentink")
 
 konecny.subtypes <- get.konecny.subtypes.fixed(data_matrix, rownames(data_matrix))
@@ -374,18 +364,17 @@ helland.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), method = "H
 verhaak.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), method = "Verhaak")
 
 conc.subtypes <- get.subtypes(data_matrix, rownames(data_matrix), "consensusOV")
-```
 
-```{r}
+
+## ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 table(bentink.subtypes$Bentink.subtypes)
 table(helland.subtypes$Helland.subtypes)
 table(konecny.subtypes$Konecny.subtypes)
 table(verhaak.subtypes$Verhaak.subtypes)
 table(conc.subtypes$consensusOV.subtypes)
-```
 
-Let's save the per-subtype assignments and scores in output:
-```{r}
+
+## ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 dir.create("output", showWarnings = FALSE)
 
 score_object_to_df <- function(score_object, assignments) {
@@ -539,11 +528,9 @@ bentink_export <- write_subtype_export(
   "output/bentink_subtypes_scores.csv"
 )
 
-```
 
-Identify the consensus assignment by ConsensusOV
 
-```{r}
+## ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 consensus_export <- make_subtype_export(
   conc.subtypes$rf.probs,
   conc.subtypes$consensusOV.subtypes
@@ -560,4 +547,3 @@ hist(
   xlab = "Max Consensus Score",
   ylab = "Count"
 )
-```

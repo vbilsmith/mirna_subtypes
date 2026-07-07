@@ -6,11 +6,24 @@ library(stringr)
 source("mRNA_clusters/harmonizationFunctions.R")
 
 # File locations
-metadata_file <- "data/metadata.cart.2025-03-30.json"
+metadata_file <- "data/tcga-ov-metadata/metadata.cohort.2025-06-23.json"
 clinical_file <- "data/clinical.cart.2025-04-08/clinical.tsv"
 output_dir <- "mRNA_clusters/output"
 
 metadata_raw <- fromJSON(metadata_file, simplifyVector = FALSE)
+
+# The 2025-06-23 metadata export includes all TCGA-OV data types. Keep only
+# STAR gene-count RNA-Seq records; the subtype exports use 424 of these files.
+metadata_raw <- metadata_raw[vapply(
+  metadata_raw,
+  function(record) {
+    str_detect(
+      record$file_name %||% "",
+      fixed(".rna_seq.augmented_star_gene_counts.tsv")
+    )
+  },
+  logical(1)
+)]
 
 # This uses an anonymous function that extracts information from each `record` 
 # extracted from the json metadata, combines with annotations, and stores in a df
@@ -48,13 +61,12 @@ clinical <- read.delim(
 
 # Check that the clinical case IDs overlap between the RNA-Seq metadata and the
 # clinical data
-overlap = intersect(rna_metadata$case_id, clinical$cases.case_id)
-cat("Metadata Records (RNA): ", nrow(rna_metadata))
-cat("Clinical Records: ", nrow(clinical))
-cat("Overlapping Case IDs: ", length(overlap))
-# We are seeing 417 overlapping samples/clinical IDs compared to 424 RNA records
-# That matches some of the calculations we make later as there are some cases with
-# multiple samples
+overlap <- intersect(rna_metadata$case_id, clinical$cases.case_id)
+cat("Metadata records (RNA): ", nrow(rna_metadata), "\n")
+cat("Clinical records: ", nrow(clinical), "\n")
+cat("Overlapping case IDs: ", length(overlap), "\n")
+# We expect 417 overlapping clinical case IDs compared to 424 RNA records because
+# some cases have multiple RNA samples.
                                                        
 
 # The GDC clinical TSV has multiple rows per case when diagnoses/treatments repeat.
@@ -290,4 +302,3 @@ message(
   "Duplicate cases concordant across all subtype methods: ",
   sum(duplicate_case_comparison$all_methods_concordant)
 )
-

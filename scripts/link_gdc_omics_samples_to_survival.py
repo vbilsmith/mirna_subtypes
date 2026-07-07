@@ -79,6 +79,30 @@ def write_csv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> 
         writer.writerows(rows)
 
 
+def collect_fieldnames(rows: list[dict[str, Any]]) -> list[str]:
+    fieldnames: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row.keys():
+            if key not in seen:
+                seen.add(key)
+                fieldnames.append(key)
+    return fieldnames
+
+
+def write_dynamic_tsv(path: Path, rows: list[dict[str, Any]]) -> None:
+    write_tsv(path, rows, collect_fieldnames(rows))
+
+
+def write_dynamic_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    write_csv(path, rows, collect_fieldnames(rows))
+
+
+def write_dynamic_both(out_dir: Path, stem: str, rows: list[dict[str, Any]]) -> None:
+    write_dynamic_tsv(out_dir / f"{stem}.tsv", rows)
+    write_dynamic_csv(out_dir / f"{stem}.csv", rows)
+
+
 def case_survival_rows(clinical_json: Path) -> list[dict[str, str]]:
     with clinical_json.open() as handle:
         cases = json.load(handle)
@@ -186,6 +210,22 @@ def link_assay_samples(
     ))
 
 
+def add_survival_to_rows(
+    rows: list[dict[str, str]],
+    survival_by_case: dict[str, dict[str, str]],
+) -> list[dict[str, str]]:
+    linked: list[dict[str, str]] = []
+    for row in rows:
+        survival = survival_by_case.get(row.get("case_id", ""), {})
+        linked.append({
+            **row,
+            **{key: value for key, value in survival.items() if key not in {"case_id", "case_submitter_id"}},
+            "has_survival": "TRUE" if survival else "FALSE",
+            "has_os_time": "TRUE" if survival.get("os_days") else "FALSE",
+        })
+    return linked
+
+
 def sample_availability_rows(long_rows: list[dict[str, str]]) -> list[dict[str, str]]:
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
     for row in long_rows:
@@ -236,6 +276,36 @@ def sample_availability_rows(long_rows: list[dict[str, str]]) -> list[dict[str, 
         row["sample_type_code"],
         row["sample_submitter_id"],
     ))
+
+
+def write_survival_label_outputs(
+    gdc_dir: Path,
+    survival_by_case: dict[str, dict[str, str]],
+) -> None:
+    label_dir = gdc_dir / "harmonized_labels"
+    if not label_dir.exists():
+        return
+
+    label_outputs = {
+        "mrna_samples_labels": "mrna_samples_survival_labels",
+        "mirna_samples_labels": "mirna_samples_survival_labels",
+        "omics_samples_labels_long": "omics_samples_survival_labels_long",
+        "omics_sample_assay_availability_labels": "omics_sample_assay_availability_survival_labels",
+        "mrna_case_level_labels": "mrna_case_level_survival_labels",
+        "mirna_case_level_labels": "mirna_case_level_survival_labels",
+    }
+
+    written = 0
+    for source_stem, output_stem in label_outputs.items():
+        source = label_dir / f"{source_stem}.tsv"
+        if not source.exists():
+            continue
+        rows = add_survival_to_rows(read_tsv(source), survival_by_case)
+        write_dynamic_both(label_dir, output_stem, rows)
+        written += 1
+
+    if written:
+        print(f"Survival-augmented label outputs written to: {label_dir}")
 
 
 def main() -> int:
@@ -353,6 +423,7 @@ def main() -> int:
     write_csv(gdc_dir / "mirna_samples_survival.csv", linked_mirna, sample_fields)
     write_csv(gdc_dir / "omics_samples_survival_long.csv", linked_long, sample_fields)
     write_csv(gdc_dir / "omics_sample_assay_availability.csv", availability, availability_fields)
+    write_survival_label_outputs(gdc_dir, survival_by_case)
 
     missing_mrna = sum(1 for row in linked_mrna if row["has_survival"] == "FALSE")
     missing_mirna = sum(1 for row in linked_mirna if row["has_survival"] == "FALSE")

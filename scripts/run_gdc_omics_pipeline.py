@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the GDC TCGA-OV data pull, survival join, and label harmonization."""
+"""Run the GDC TCGA-OV data acquisition pipeline."""
 
 from __future__ import annotations
 
@@ -10,12 +10,46 @@ import sys
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the TCGA-OV GDC omics harmonization pipeline."
+        description="Run TCGA-OV GDC omics data acquisition and optional downstream steps."
     )
     parser.add_argument(
         "--download",
         action="store_true",
         help="Download mRNA and miRNA expression files with gdc-client.",
+    )
+    parser.add_argument(
+        "--skip-pull",
+        action="store_true",
+        help="Skip GDC queries and use existing files in --out-dir.",
+    )
+    parser.add_argument(
+        "--harmonize-labels",
+        action="store_true",
+        help=(
+            "After cluster labels have been generated, harmonize existing "
+            "mRNA/miRNA labels to the current GDC sample tables."
+        ),
+    )
+    parser.add_argument(
+        "--mrna-label-dir",
+        default="mRNA_clusters/output",
+        help="Directory containing mRNA subtype score exports.",
+    )
+    parser.add_argument(
+        "--mirna-label-dir",
+        default=None,
+        help=(
+            "Optional directory containing miRNA ConsensusOV_labels.csv and "
+            "ConsensusOV_probs.csv. Omit until miRNA clusters are available."
+        ),
+    )
+    parser.add_argument(
+        "--survival",
+        action="store_true",
+        help=(
+            "Calculate survival fields and append them to harmonized labels. "
+            "Use after --harmonize-labels, or after label outputs already exist."
+        ),
     )
     parser.add_argument(
         "--out-dir",
@@ -49,19 +83,29 @@ def main() -> int:
     if args.download:
         pull_command.append("--download")
 
-    run(pull_command)
-    run([
-        sys.executable,
-        "scripts/link_gdc_omics_samples_to_survival.py",
-        "--gdc-dir",
-        args.out_dir,
-    ])
-    run([
-        sys.executable,
-        "scripts/harmonize_gdc_omics_labels.py",
-        "--gdc-dir",
-        args.out_dir,
-    ])
+    if not args.skip_pull:
+        run(pull_command)
+
+    if args.harmonize_labels:
+        harmonize_command = [
+            sys.executable,
+            "scripts/harmonize_gdc_omics_labels.py",
+            "--gdc-dir",
+            args.out_dir,
+            "--mrna-label-dir",
+            args.mrna_label_dir,
+        ]
+        if args.mirna_label_dir:
+            harmonize_command.extend(["--mirna-label-dir", args.mirna_label_dir])
+        run(harmonize_command)
+
+    if args.survival:
+        run([
+            sys.executable,
+            "scripts/link_gdc_omics_samples_to_survival.py",
+            "--gdc-dir",
+            args.out_dir,
+        ])
 
     return 0
 

@@ -44,10 +44,10 @@ annotation_summary <- function(annotations) {
   )
   annotation_text <- paste(categories, notes, collapse = " ")
   
-  qc_dnu <- any(str_detect(categories, regex("Item flagged DNU", ignore_case = TRUE)))
-  qc_center_failed <- any(str_detect(categories, regex("Center QC failed", ignore_case = TRUE)))
-  qc_low_coverage <- any(str_detect(notes, regex("LOW 5/3 COVERAGE RATIO", ignore_case = TRUE)))
-  qc_high_mitochondrial <- any(str_detect(notes, regex("HIGH MITOCHONDRIAL CONTENT", ignore_case = TRUE)))
+  qc_dnu <- any(str_detect(categories, regex("Item flagged DNU", ignore_case = TRUE)), na.rm = TRUE)
+  qc_center_failed <- any(str_detect(categories, regex("Center QC failed", ignore_case = TRUE)), na.rm = TRUE)
+  qc_low_coverage <- any(str_detect(notes, regex("LOW 5/3 COVERAGE RATIO", ignore_case = TRUE)), na.rm = TRUE)
+  qc_high_mitochondrial <- any(str_detect(notes, regex("HIGH MITOCHONDRIAL CONTENT", ignore_case = TRUE)), na.rm = TRUE)
   
   data.frame(
     qc_flag = qc_dnu || qc_center_failed || qc_low_coverage || qc_high_mitochondrial,
@@ -55,8 +55,8 @@ annotation_summary <- function(annotations) {
     qc_center_failed = qc_center_failed,
     qc_low_coverage = qc_low_coverage,
     qc_high_mitochondrial = qc_high_mitochondrial,
-    noncanonical_flag = str_detect(annotation_text, regex("noncanonical", ignore_case = TRUE)),
-    ovarian_triplet_flag = str_detect(annotation_text, regex("ovarian? triplet", ignore_case = TRUE)),
+    noncanonical_flag = isTRUE(str_detect(annotation_text, regex("noncanonical", ignore_case = TRUE))),
+    ovarian_triplet_flag = isTRUE(str_detect(annotation_text, regex("ovarian? triplet", ignore_case = TRUE))),
     annotation_categories = collapse_unique(categories),
     annotation_notes = collapse_unique(notes),
     stringsAsFactors = FALSE

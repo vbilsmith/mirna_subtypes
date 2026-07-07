@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Harmonize subtype labels with GDC mRNA/miRNA sample-survival tables."""
+"""Harmonize subtype labels with GDC mRNA/miRNA sample tables."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from typing import Any
 
 DEFAULT_GDC_DIR = "data/gdc_tcga_ov_omics"
 DEFAULT_MRNA_LABEL_DIR = "mRNA_clusters/output"
-DEFAULT_MIRNA_LABEL_DIR = "miRNA_clusters"
 
 
 MRNA_SUBTYPE_FILES = {
@@ -28,12 +27,19 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Join existing mRNA/miRNA subtype labels onto the current GDC "
-            "sample-survival tables produced by the pipeline."
+            "sample tables produced by the data acquisition step."
         )
     )
     parser.add_argument("--gdc-dir", default=DEFAULT_GDC_DIR)
     parser.add_argument("--mrna-label-dir", default=DEFAULT_MRNA_LABEL_DIR)
-    parser.add_argument("--mirna-label-dir", default=DEFAULT_MIRNA_LABEL_DIR)
+    parser.add_argument(
+        "--mirna-label-dir",
+        default=None,
+        help=(
+            "Optional directory containing miRNA ConsensusOV_labels.csv and "
+            "ConsensusOV_probs.csv. If omitted, miRNA subtype labels are not harmonized."
+        ),
+    )
     parser.add_argument(
         "--out-dir",
         default=None,
@@ -154,29 +160,43 @@ def add_labels_by_file_name(
 
 def resolve_mirna_label_samples(
     mirna_labels_by_sample: dict[str, dict[str, str]],
-    mrna_rows: list[dict[str, str]],
     mirna_rows: list[dict[str, str]],
 ) -> tuple[dict[str, dict[str, str]], dict[str, Any]]:
-    mrna_by_file = {row["file_name"]: row for row in mrna_rows}
-    mirna_by_file = {row["file_name"]: row for row in mirna_rows}
+    identifier_index: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for row in mirna_rows:
+        sample_id = row.get("sample_submitter_id", "")
+        identifiers = {
+            "miRNA_file_name": row.get("file_name", ""),
+            "miRNA_file_id": row.get("file_id", ""),
+            "aliquot_barcode": row.get("aliquot_barcode", ""),
+            "sample_submitter_id": row.get("sample_submitter_id", ""),
+            "case_submitter_id": row.get("case_submitter_id", ""),
+            "case_id": row.get("case_id", ""),
+        }
+        for source, identifier in identifiers.items():
+            if identifier and sample_id:
+                identifier_index[identifier].append((sample_id, source))
 
     labels_by_sample_submitter: dict[str, dict[str, str]] = {}
     source_counts: Counter[str] = Counter()
     unresolved: list[str] = []
+    ambiguous: list[str] = []
 
     for label_sample, labels in mirna_labels_by_sample.items():
         labels_with_source = dict(labels)
-        if label_sample in mirna_by_file:
-            sample_id = mirna_by_file[label_sample]["sample_submitter_id"]
-            labels_with_source["miRNA_label_source"] = "miRNA_file_name"
+        matches = identifier_index.get(label_sample, [])
+        sample_ids = sorted({sample_id for sample_id, _source in matches})
+        sources = sorted({source for _sample_id, source in matches})
+
+        if len(sample_ids) == 1:
+            sample_id = sample_ids[0]
+            labels_with_source["miRNA_label_source"] = ";".join(sources)
+            labels_with_source["miRNA_label_source_identifier"] = label_sample
             labels_by_sample_submitter[sample_id] = labels_with_source
-            source_counts["miRNA_file_name"] += 1
-        elif label_sample in mrna_by_file:
-            sample_id = mrna_by_file[label_sample]["sample_submitter_id"]
-            labels_with_source["miRNA_label_source"] = "mRNA_file_name"
-            labels_with_source["miRNA_label_source_file_name"] = label_sample
-            labels_by_sample_submitter[sample_id] = labels_with_source
-            source_counts["mRNA_file_name"] += 1
+            source_counts[labels_with_source["miRNA_label_source"]] += 1
+        elif len(sample_ids) > 1:
+            ambiguous.append(label_sample)
+            source_counts["ambiguous"] += 1
         else:
             unresolved.append(label_sample)
             source_counts["unresolved"] += 1
@@ -184,6 +204,7 @@ def resolve_mirna_label_samples(
     diagnostics = {
         "source_counts": dict(source_counts),
         "unresolved": unresolved,
+        "ambiguous": ambiguous,
     }
     return labels_by_sample_submitter, diagnostics
 
@@ -200,6 +221,50 @@ def add_labels_by_sample_submitter(
             matched += 1
         linked.append({**row, **labels})
     return linked, matched
+
+
+def sample_availability_rows(
+    mrna_rows: list[dict[str, str]],
+    mirna_rows: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for assay, assay_rows in (("mRNA", mrna_rows), ("miRNA", mirna_rows)):
+        for row in assay_rows:
+            key = (row["case_id"], row["sample_submitter_id"])
+            current = grouped.setdefault(key, {
+                "case_id": row["case_id"],
+                "case_submitter_id": row["case_submitter_id"],
+                "sample_submitter_id": row["sample_submitter_id"],
+                "sample_type": row["sample_type"],
+                "sample_type_code": row["sample_type_code"],
+                "mRNA_files": [],
+                "miRNA_files": [],
+            })
+            current[f"{assay}_files"].append(row["file_name"])
+
+    availability: list[dict[str, str]] = []
+    for row in grouped.values():
+        mrna_files = sorted(row["mRNA_files"])
+        mirna_files = sorted(row["miRNA_files"])
+        availability.append({
+            "case_id": row["case_id"],
+            "case_submitter_id": row["case_submitter_id"],
+            "sample_submitter_id": row["sample_submitter_id"],
+            "sample_type": row["sample_type"],
+            "sample_type_code": row["sample_type_code"],
+            "has_mRNA": "TRUE" if mrna_files else "FALSE",
+            "has_miRNA": "TRUE" if mirna_files else "FALSE",
+            "n_mRNA_files": str(len(mrna_files)),
+            "n_miRNA_files": str(len(mirna_files)),
+            "mRNA_files": ";".join(mrna_files),
+            "miRNA_files": ";".join(mirna_files),
+        })
+
+    return sorted(availability, key=lambda row: (
+        row["case_submitter_id"],
+        row["sample_type_code"],
+        row["sample_submitter_id"],
+    ))
 
 
 def collapse_case_level(rows: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -270,9 +335,9 @@ def main() -> int:
     gdc_dir = Path(args.gdc_dir)
     out_dir = Path(args.out_dir) if args.out_dir else gdc_dir / "harmonized_labels"
 
-    mrna_rows = read_tsv(gdc_dir / "mrna_samples_survival.tsv")
-    mirna_rows = read_tsv(gdc_dir / "mirna_samples_survival.tsv")
-    availability_rows = read_tsv(gdc_dir / "omics_sample_assay_availability.tsv")
+    mrna_rows = read_tsv(gdc_dir / "mrna_file_sample_link.tsv")
+    mirna_rows = read_tsv(gdc_dir / "mirna_file_sample_link.tsv")
+    availability_rows = sample_availability_rows(mrna_rows, mirna_rows)
 
     mrna_labels_by_file = load_mrna_labels(Path(args.mrna_label_dir))
     mrna_labeled, mrna_label_matches = add_labels_by_file_name(mrna_rows, mrna_labels_by_file)
@@ -285,10 +350,13 @@ def main() -> int:
         if row.get("sample_submitter_id")
     }
 
-    mirna_labels_raw = load_mirna_consensus_labels(Path(args.mirna_label_dir))
+    if args.mirna_label_dir:
+        mirna_labels_raw = load_mirna_consensus_labels(Path(args.mirna_label_dir))
+    else:
+        print("No --mirna-label-dir provided; skipping miRNA subtype label harmonization.")
+        mirna_labels_raw = {}
     mirna_labels_by_sample, mirna_diagnostics = resolve_mirna_label_samples(
         mirna_labels_raw,
-        mrna_rows,
         mirna_rows,
     )
     mirna_labeled, mirna_label_matches = add_labels_by_sample_submitter(
@@ -324,12 +392,12 @@ def main() -> int:
     }
     sample_confusion = make_pairwise_confusion(availability_labeled, subtype_cols)
 
-    write_both(out_dir, "mrna_samples_survival_labels", mrna_labeled)
-    write_both(out_dir, "mirna_samples_survival_labels", mirna_labeled)
-    write_both(out_dir, "omics_samples_survival_labels_long", long_labeled)
+    write_both(out_dir, "mrna_samples_labels", mrna_labeled)
+    write_both(out_dir, "mirna_samples_labels", mirna_labeled)
+    write_both(out_dir, "omics_samples_labels_long", long_labeled)
     write_both(out_dir, "omics_sample_assay_availability_labels", availability_labeled)
-    write_both(out_dir, "mrna_case_level_survival_labels", mrna_case_level)
-    write_both(out_dir, "mirna_case_level_survival_labels", mirna_case_level)
+    write_both(out_dir, "mrna_case_level_labels", mrna_case_level)
+    write_both(out_dir, "mirna_case_level_labels", mirna_case_level)
     write_both(out_dir, "subtype_confusion_long", sample_confusion)
 
     diagnostics = [
@@ -339,16 +407,36 @@ def main() -> int:
         {"metric": "miRNA_rows_with_consensusOV_label", "value": mirna_label_matches},
         {"metric": "miRNA_label_input_rows", "value": len(mirna_labels_raw)},
         {
-            "metric": "miRNA_label_resolved_from_mRNA_file_name",
-            "value": mirna_diagnostics["source_counts"].get("mRNA_file_name", 0),
-        },
-        {
             "metric": "miRNA_label_resolved_from_miRNA_file_name",
             "value": mirna_diagnostics["source_counts"].get("miRNA_file_name", 0),
         },
         {
+            "metric": "miRNA_label_resolved_from_miRNA_file_id",
+            "value": mirna_diagnostics["source_counts"].get("miRNA_file_id", 0),
+        },
+        {
+            "metric": "miRNA_label_resolved_from_aliquot_barcode",
+            "value": mirna_diagnostics["source_counts"].get("aliquot_barcode", 0),
+        },
+        {
+            "metric": "miRNA_label_resolved_from_sample_submitter_id",
+            "value": mirna_diagnostics["source_counts"].get("sample_submitter_id", 0),
+        },
+        {
+            "metric": "miRNA_label_resolved_from_case_submitter_id",
+            "value": mirna_diagnostics["source_counts"].get("case_submitter_id", 0),
+        },
+        {
+            "metric": "miRNA_label_resolved_from_case_id",
+            "value": mirna_diagnostics["source_counts"].get("case_id", 0),
+        },
+        {
             "metric": "miRNA_label_unresolved",
             "value": mirna_diagnostics["source_counts"].get("unresolved", 0),
+        },
+        {
+            "metric": "miRNA_label_ambiguous",
+            "value": mirna_diagnostics["source_counts"].get("ambiguous", 0),
         },
         {"metric": "availability_rows", "value": len(availability_labeled)},
     ]
@@ -359,6 +447,12 @@ def main() -> int:
             out_dir,
             "unresolved_miRNA_label_samples",
             [{"sample": sample} for sample in mirna_diagnostics["unresolved"]],
+        )
+    if mirna_diagnostics["ambiguous"]:
+        write_both(
+            out_dir,
+            "ambiguous_miRNA_label_samples",
+            [{"sample": sample} for sample in mirna_diagnostics["ambiguous"]],
         )
 
     print(f"mRNA rows: {len(mrna_rows)}")

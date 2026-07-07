@@ -77,4 +77,19 @@ After cluster assignments have been generated, run:
 python3 scripts/run_gdc_omics_pipeline.py --skip-pull --harmonize-labels --survival
 ```
 
+This harmonizes mRNA subtype labels and appends clinical/survival fields. miRNA
+sample rows are still linked to GDC and clinical data, but miRNA subtype labels
+remain blank until the miRNA cluster assignments are available.
 
+When miRNA cluster labels are available, place `ConsensusOV_labels.csv` and
+`ConsensusOV_probs.csv` in a separate directory and pass it explicitly:
+
+```bash
+python3 scripts/run_gdc_omics_pipeline.py --skip-pull --harmonize-labels --survival --mirna-label-dir path/to/mirna_labels
+```
+
+For survival analyses, filter to:
+
+```text
+has_os_time == TRUE
+```
