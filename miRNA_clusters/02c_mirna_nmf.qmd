@@ -7,7 +7,7 @@ editor: visual
 
 ## Goal
 
-Cluster the 497 samples into subtypes by NMF of their miRNA profiles. This file does the rank survey (2–8) that justifies the cluster count, then fits the final model at k = 4 and writes the per-sample subtype assignments. This is the **deliverable** file: `mirna_data/mirna_nmf_subtypes_k4.csv`.
+Cluster the downloaded GDC miRNA samples into subtypes by NMF of their miRNA profiles. This file does the rank survey (2–8) that justifies the cluster count, then fits the final model at k = 4 and writes per-sample subtype assignments with GDC/clinical identifiers. The main **deliverable** file is `miRNA_clusters/mirna_nmf_subtypes_k4.csv`; a copy is also written to `data/mirna_data/mirna_nmf_subtypes_k4.csv`.
 
 
 ```{r}
@@ -17,13 +17,25 @@ library(tidyverse)
 library(NMF)
 NMF::nmf.options(cores = 4)
 
+project_root <- normalizePath(
+  if (basename(getwd()) == "miRNA_clusters") file.path(getwd(), "..") else getwd(),
+  mustWork = TRUE
+)
+mirna_data_dir <- file.path(project_root, "data", "mirna_data")
+mirna_plot_dir <- file.path(project_root, "miRNA_clusters", "mirna_plots")
+mirna_cluster_dir <- file.path(project_root, "miRNA_clusters")
+dir.create(mirna_plot_dir, showWarnings = FALSE, recursive = TRUE)
 ```
 
 ## Load hand-off matrix
 
 ```{r}
 #| label: load
-mirna_lcpm <- readRDS("mirna_data/mirna_lcpm_matrix.rds")   # miRNA x sample (1560 x 497)
+mirna_lcpm <- readRDS(file.path(mirna_data_dir, "mirna_lcpm_matrix.rds"))   # miRNA x sample
+mirna_sample_metadata <- readr::read_csv(
+  file.path(mirna_data_dir, "mirna_sample_metadata.csv"),
+  show_col_types = FALSE
+)
 dim(mirna_lcpm)
 ```
 
@@ -43,7 +55,7 @@ Runs NMF across candidate ranks to inform the cluster count (cophenetic correlat
 
 ```{r}
 #| label: rank-survey
-mirna_rank_survey_path <- "mirna_data/mirna_nmf_rank_survey.rds"
+mirna_rank_survey_path <- file.path(mirna_data_dir, "mirna_nmf_rank_survey.rds")
 
 if (file.exists(mirna_rank_survey_path)) {
   mirna_nmf_estim <- readRDS(mirna_rank_survey_path)
@@ -54,7 +66,7 @@ if (file.exists(mirna_rank_survey_path)) {
   saveRDS(mirna_nmf_estim, mirna_rank_survey_path)
 }
 
-png("mirna_plots/mirna_nmf_rank_survey.png", width = 1000, height = 800, res = 120)
+png(file.path(mirna_plot_dir, "mirna_nmf_rank_survey.png"), width = 1000, height = 800, res = 120)
 plot(mirna_nmf_estim)
 dev.off()
 ```
@@ -68,7 +80,7 @@ k = 4 was chosen from the rank survey above (see thesis) and mirrors the 4 conse
 set.seed(123)
 mirna_nmf_result <- nmf(mirna_nmf_input, rank = 4, method = "brunet",
                         nrun = 50, .opt = "vp4")
-saveRDS(mirna_nmf_result, "mirna_data/mirna_nmf_result_k4.rds")
+saveRDS(mirna_nmf_result, file.path(mirna_data_dir, "mirna_nmf_result_k4.rds"))
 
 # NOTE: mirna_nmf_input is miRNA x sample, so predict() clusters the 497 samples.
 # To reproduce the original per-miRNA result instead, use t(mirna_nmf_input) here.
@@ -83,7 +95,7 @@ mirna_clusters  <- predict(mirna_nmf_result)
 mirna_ord       <- order(mirna_clusters)
 mirna_cons_sort <- mirna_cons[mirna_ord, mirna_ord]
 
-png("mirna_plots/mirna_consensus_nmf.png", width = 1000, height = 900)
+png(file.path(mirna_plot_dir, "mirna_consensus_nmf.png"), width = 1000, height = 900)
 image(
   x = seq_len(ncol(mirna_cons_sort)),
   y = seq_len(nrow(mirna_cons_sort)),
@@ -100,10 +112,23 @@ dev.off()
 #| label: save
 mirna_clusters <- predict(mirna_nmf_result)
 mirna_nmf_df   <- data.frame(
-  sample_id = names(mirna_clusters),        
+  file_name = names(mirna_clusters),
   cluster   = as.integer(mirna_clusters)
-)
-write.csv(mirna_nmf_df, "mirna_data/mirna_nmf_subtypes_k4.csv", row.names = FALSE)
+) |>
+  left_join(mirna_sample_metadata, by = "file_name") |>
+  relocate(
+    file_name,
+    file_id,
+    case_submitter_id,
+    case_id,
+    sample_submitter_id,
+    sample_type,
+    sample_type_code,
+    aliquot_barcode,
+    cluster
+  )
+write.csv(mirna_nmf_df, file.path(mirna_cluster_dir, "mirna_nmf_subtypes_k4.csv"), row.names = FALSE)
+write.csv(mirna_nmf_df, file.path(mirna_data_dir, "mirna_nmf_subtypes_k4.csv"), row.names = FALSE)
 
 nrow(mirna_nmf_df)   
 ```
@@ -116,7 +141,7 @@ head(mirna_nmf_df)
 table(mirna_nmf_df$cluster)          
 
 mirna_sample_totals <- colSums(mirna_nmf_input)
-png("mirna_plots/mirna_counts_by_cluster.png", width = 1000, height = 800, res = 120)
+png(file.path(mirna_plot_dir, "mirna_counts_by_cluster.png"), width = 1000, height = 800, res = 120)
 boxplot(mirna_sample_totals ~ mirna_nmf_df$cluster,
         ylab = "total miRNA counts", xlab = "cluster")
 dev.off()

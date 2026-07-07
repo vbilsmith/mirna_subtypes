@@ -14,15 +14,25 @@ Cluster the normalized miRNA matrix with k-means (k = 4) as a distance-based cro
 #| message: false
 library(tidyverse)
 
-dir.create("mirna_plots", showWarnings = FALSE)
+project_root <- normalizePath(
+  if (basename(getwd()) == "miRNA_clusters") file.path(getwd(), "..") else getwd(),
+  mustWork = TRUE
+)
+mirna_data_dir <- file.path(project_root, "data", "mirna_data")
+mirna_plot_dir <- file.path(project_root, "miRNA_clusters", "mirna_plots")
+dir.create(mirna_plot_dir, showWarnings = FALSE, recursive = TRUE)
 ```
 
 ## Load hand-off matrix & PCA
 
 ```{r}
 #| label: load
-mirna_lcpm <- readRDS("mirna_data/mirna_lcpm_matrix.rds")   # miRNA x sample, normalized + log
-mirna_pca  <- readRDS("mirna_data/mirna_pca.rds")           # from 02_mirna_pca.qmd
+mirna_lcpm <- readRDS(file.path(mirna_data_dir, "mirna_lcpm_matrix.rds"))   # miRNA x sample, normalized + log
+mirna_pca  <- readRDS(file.path(mirna_data_dir, "mirna_pca.rds"))           # from 02_mirna_pca.qmd
+mirna_sample_metadata <- readr::read_csv(
+  file.path(mirna_data_dir, "mirna_sample_metadata.csv"),
+  show_col_types = FALSE
+)
 ```
 
 ## Run k-means
@@ -45,7 +55,7 @@ mirna_kmeans_plot_df <- as.data.frame(mirna_pca$x)
 mirna_kmeans_plot_df$cluster <- factor(mirna_kmeans$cluster)
 
 ggsave(
-  "mirna_plots/mirna_kmeans_pca_clusters.png",
+  file.path(mirna_plot_dir, "mirna_kmeans_pca_clusters.png"),
   ggplot(mirna_kmeans_plot_df, aes(PC1, PC2, color = cluster)) +
     geom_point(size = 3, alpha = 0.7) +
     labs(x = "PC 1", y = "PC 2") +
@@ -59,10 +69,21 @@ ggsave(
 ```{r}
 #| label: save
 mirna_kmeans_df <- data.frame(
-  sample_id = rownames(t(mirna_lcpm)),
+  file_name = rownames(t(mirna_lcpm)),
   cluster   = as.integer(mirna_kmeans$cluster)
-)
-write.csv(mirna_kmeans_df, "mirna_data/mirna_kmeans_subtypes_k4.csv", row.names = FALSE)
+) |>
+  left_join(mirna_sample_metadata, by = "file_name") |>
+  relocate(
+    file_name,
+    file_id,
+    case_submitter_id,
+    case_id,
+    sample_submitter_id,
+    sample_type,
+    sample_type_code,
+    aliquot_barcode,
+    cluster
+  )
+write.csv(mirna_kmeans_df, file.path(mirna_data_dir, "mirna_kmeans_subtypes_k4.csv"), row.names = FALSE)
 ```
-
 

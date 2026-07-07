@@ -28,7 +28,7 @@ Here are the steps of the full workflow:
 
 3. `scripts/harmonize_gdc_omics_labels.py`
    - joins existing mRNA subtype labels onto current GDC mRNA rows
-   - maps existing miRNA ConsensusOV labels by sample barcode
+   - joins miRNA NMF subtype labels onto current GDC miRNA rows
    - writes harmonized label tables and subtype agreement summaries
 
 4. `scripts/link_gdc_omics_samples_to_survival.py`
@@ -77,15 +77,17 @@ After cluster assignments have been generated, run:
 python3 scripts/run_gdc_omics_pipeline.py --skip-pull --harmonize-labels --survival
 ```
 
-This harmonizes mRNA subtype labels and appends clinical/survival fields. miRNA
-sample rows are still linked to GDC and clinical data, but miRNA subtype labels
-remain blank until the miRNA cluster assignments are available.
+This harmonizes mRNA subtype labels and miRNA NMF subtype labels, then appends
+clinical/survival fields. By default, miRNA labels are read from:
 
-When miRNA cluster labels are available, place `ConsensusOV_labels.csv` and
-`ConsensusOV_probs.csv` in a separate directory and pass it explicitly:
+```text
+miRNA_clusters/mirna_nmf_subtypes_k4.csv
+```
+
+To use a different miRNA subtype file, pass it explicitly:
 
 ```bash
-python3 scripts/run_gdc_omics_pipeline.py --skip-pull --harmonize-labels --survival --mirna-label-dir path/to/mirna_labels
+python3 scripts/run_gdc_omics_pipeline.py --skip-pull --harmonize-labels --survival --mirna-subtype-file path/to/mirna_nmf_subtypes_k4.csv
 ```
 
 For survival analyses, filter to:

@@ -12,6 +12,7 @@ from typing import Any
 
 DEFAULT_GDC_DIR = "data/gdc_tcga_ov_omics"
 DEFAULT_MRNA_LABEL_DIR = "mRNA_clusters/output"
+DEFAULT_MIRNA_SUBTYPE_FILE = "miRNA_clusters/mirna_nmf_subtypes_k4.csv"
 
 
 MRNA_SUBTYPE_FILES = {
@@ -33,11 +34,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gdc-dir", default=DEFAULT_GDC_DIR)
     parser.add_argument("--mrna-label-dir", default=DEFAULT_MRNA_LABEL_DIR)
     parser.add_argument(
-        "--mirna-label-dir",
+        "--mirna-subtype-file",
+        default=DEFAULT_MIRNA_SUBTYPE_FILE,
+        help=(
+            "CSV containing miRNA NMF subtype assignments. Defaults to "
+            "miRNA_clusters/mirna_nmf_subtypes_k4.csv."
+        ),
+    )
+    parser.add_argument(
+        "--mirna-consensus-label-dir",
         default=None,
         help=(
-            "Optional directory containing miRNA ConsensusOV_labels.csv and "
-            "ConsensusOV_probs.csv. If omitted, miRNA subtype labels are not harmonized."
+            "Legacy optional directory containing miRNA ConsensusOV_labels.csv "
+            "and ConsensusOV_probs.csv."
         ),
     )
     parser.add_argument(
@@ -141,6 +150,31 @@ def load_mirna_consensus_labels(label_dir: Path) -> dict[str, dict[str, str]]:
                     continue
                 labels[sample][f"miRNA_consensusOV_{key}"] = value
 
+    return labels
+
+
+def load_mirna_nmf_labels(path: Path) -> dict[str, dict[str, str]]:
+    if not path.exists():
+        return {}
+
+    labels: dict[str, dict[str, str]] = {}
+    for row in read_csv(path):
+        sample = (
+            row.get("file_name")
+            or row.get("sample_id")
+            or row.get("sample")
+            or row.get("sample_submitter_id")
+            or row.get("aliquot_barcode")
+            or ""
+        )
+        cluster = row.get("cluster", "")
+        if not sample or not cluster:
+            continue
+
+        labels[sample] = {
+            "miRNA_nmf_subtype": f"NMF_{cluster}",
+            "miRNA_nmf_cluster": cluster,
+        }
     return labels
 
 
@@ -350,10 +384,15 @@ def main() -> int:
         if row.get("sample_submitter_id")
     }
 
-    if args.mirna_label_dir:
-        mirna_labels_raw = load_mirna_consensus_labels(Path(args.mirna_label_dir))
+    mirna_subtype_file = Path(args.mirna_subtype_file) if args.mirna_subtype_file else None
+    if mirna_subtype_file and mirna_subtype_file.exists():
+        mirna_labels_raw = load_mirna_nmf_labels(mirna_subtype_file)
+        print(f"Using miRNA NMF subtype labels from: {mirna_subtype_file}")
+    elif args.mirna_consensus_label_dir:
+        mirna_labels_raw = load_mirna_consensus_labels(Path(args.mirna_consensus_label_dir))
+        print(f"Using legacy miRNA ConsensusOV labels from: {args.mirna_consensus_label_dir}")
     else:
-        print("No --mirna-label-dir provided; skipping miRNA subtype label harmonization.")
+        print("No miRNA subtype label file found; skipping miRNA subtype label harmonization.")
         mirna_labels_raw = {}
     mirna_labels_by_sample, mirna_diagnostics = resolve_mirna_label_samples(
         mirna_labels_raw,
@@ -388,7 +427,7 @@ def main() -> int:
         "mRNA_helland": "helland_subtype",
         "mRNA_verhaak": "verhaak_subtype",
         "mRNA_bentink": "bentink_subtype",
-        "miRNA_consensusOV": "miRNA_consensusOV_subtype",
+        "miRNA_NMF": "miRNA_nmf_subtype",
     }
     sample_confusion = make_pairwise_confusion(availability_labeled, subtype_cols)
 
@@ -404,7 +443,7 @@ def main() -> int:
         {"metric": "mRNA_sample_rows", "value": len(mrna_rows)},
         {"metric": "mRNA_rows_with_any_label", "value": mrna_label_matches},
         {"metric": "miRNA_sample_rows", "value": len(mirna_rows)},
-        {"metric": "miRNA_rows_with_consensusOV_label", "value": mirna_label_matches},
+        {"metric": "miRNA_rows_with_any_label", "value": mirna_label_matches},
         {"metric": "miRNA_label_input_rows", "value": len(mirna_labels_raw)},
         {
             "metric": "miRNA_label_resolved_from_miRNA_file_name",
@@ -458,7 +497,7 @@ def main() -> int:
     print(f"mRNA rows: {len(mrna_rows)}")
     print(f"mRNA rows with any subtype labels: {mrna_label_matches}")
     print(f"miRNA rows: {len(mirna_rows)}")
-    print(f"miRNA rows with ConsensusOV labels: {mirna_label_matches}")
+    print(f"miRNA rows with subtype labels: {mirna_label_matches}")
     print(f"miRNA label resolution: {mirna_diagnostics['source_counts']}")
     print(f"Outputs written to: {out_dir}")
 

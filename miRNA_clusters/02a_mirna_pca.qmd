@@ -16,13 +16,20 @@ library(tidyverse)
 library(factoextra)
 library(GGally)
 
+project_root <- normalizePath(
+  if (basename(getwd()) == "miRNA_clusters") file.path(getwd(), "..") else getwd(),
+  mustWork = TRUE
+)
+mirna_data_dir <- file.path(project_root, "data", "mirna_data")
+mirna_plot_dir <- file.path(project_root, "miRNA_clusters", "mirna_plots")
+dir.create(mirna_plot_dir, showWarnings = FALSE, recursive = TRUE)
 ```
 
 ## Load hand-off matrix
 
 ```{r}
 #| label: load
-mirna_lcpm <- readRDS("mirna_data/mirna_lcpm_matrix.rds")   # miRNA x sample, normalized + log
+mirna_lcpm <- readRDS(file.path(mirna_data_dir, "mirna_lcpm_matrix.rds"))   # miRNA x sample, normalized + log
 dim(mirna_lcpm)
 ```
 
@@ -40,7 +47,7 @@ mirna_pca <- prcomp(t(mirna_lcpm), center = TRUE, scale. = TRUE)
 ```{r}
 #| label: pca-scree
 ggsave(
-  "mirna_plots/mirna_pca_scree_plot.png",
+  file.path(mirna_plot_dir, "mirna_pca_scree_plot.png"),
   fviz_eig(mirna_pca, addlabels = TRUE, ylim = c(0, 100), main = ""),
   width = 8, height = 6, dpi = 300
 )
@@ -54,7 +61,7 @@ mirna_pca_pairs <- as.data.frame(mirna_pca$x[, 1:5])
 colnames(mirna_pca_pairs) <- paste0("PC", 1:5)
 
 ggsave(
-  "mirna_plots/mirna_pca_pairwise_pc1_to_pc5.png",
+  file.path(mirna_plot_dir, "mirna_pca_pairwise_pc1_to_pc5.png"),
   ggpairs(mirna_pca_pairs, title = "Pairwise Plots of Principal Components 1-5"),
   width = 12, height = 12, dpi = 300
 )
@@ -66,5 +73,5 @@ The k-means file projects its clusters onto these PCA axes, so save the result r
 
 ```{r}
 #| label: save
-saveRDS(mirna_pca, "mirna_data/mirna_pca.rds")
+saveRDS(mirna_pca, file.path(mirna_data_dir, "mirna_pca.rds"))
 ```

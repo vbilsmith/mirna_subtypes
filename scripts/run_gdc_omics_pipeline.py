@@ -36,11 +36,11 @@ def parse_args() -> argparse.Namespace:
         help="Directory containing mRNA subtype score exports.",
     )
     parser.add_argument(
-        "--mirna-label-dir",
-        default=None,
+        "--mirna-subtype-file",
+        default="miRNA_clusters/mirna_nmf_subtypes_k4.csv",
         help=(
-            "Optional directory containing miRNA ConsensusOV_labels.csv and "
-            "ConsensusOV_probs.csv. Omit until miRNA clusters are available."
+            "CSV containing miRNA NMF subtype assignments. Defaults to "
+            "miRNA_clusters/mirna_nmf_subtypes_k4.csv."
         ),
     )
     parser.add_argument(
@@ -94,9 +94,9 @@ def main() -> int:
             args.out_dir,
             "--mrna-label-dir",
             args.mrna_label_dir,
+            "--mirna-subtype-file",
+            args.mirna_subtype_file,
         ]
-        if args.mirna_label_dir:
-            harmonize_command.extend(["--mirna-label-dir", args.mirna_label_dir])
         run(harmonize_command)
 
     if args.survival:
