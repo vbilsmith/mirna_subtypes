@@ -109,6 +109,13 @@ one row per clustered miRNA file/sample and a `cluster` column; the current
 pipeline also carries through GDC identifiers such as `file_name`,
 `case_submitter_id`, `sample_submitter_id`, and `aliquot_barcode`.
 
+Older copies of this CSV may have a `sample_id` column that actually contains
+miRNA quantification file names. Those values are not expected to match the
+mRNA subtype `sample` column or mRNA `file_id` values, because those are
+assay-specific GDC files. Harmonization resolves miRNA and mRNA labels through
+the shared GDC metadata, using `sample_submitter_id` and `case_submitter_id` as
+the cross-assay identifiers.
+
 ## Harmonize Labels With Clinical Data
 
 After mRNA and miRNA cluster assignments have been generated, run:
@@ -122,6 +129,13 @@ clinical/survival fields. By default, miRNA labels are read from:
 
 ```text
 miRNA_clusters/mirna_nmf_subtypes_k4.csv
+```
+
+Use the harmonized outputs, not raw mRNA/miRNA file names, to compare assays:
+
+```text
+data/gdc_tcga_ov_omics/harmonized_labels/omics_sample_assay_availability_labels.tsv
+data/gdc_tcga_ov_omics/harmonized_labels/omics_samples_survival_labels_long.tsv
 ```
 
 To use a different miRNA subtype file, pass it explicitly:

@@ -157,16 +157,24 @@ def load_mirna_nmf_labels(path: Path) -> dict[str, dict[str, str]]:
     if not path.exists():
         return {}
 
+    identifier_columns = [
+        "file_name",
+        "sample_id",
+        "sample",
+        "sample_submitter_id",
+        "aliquot_barcode",
+    ]
     labels: dict[str, dict[str, str]] = {}
     for row in read_csv(path):
-        sample = (
-            row.get("file_name")
-            or row.get("sample_id")
-            or row.get("sample")
-            or row.get("sample_submitter_id")
-            or row.get("aliquot_barcode")
-            or ""
-        )
+        sample = ""
+        sample_column = ""
+        for column in identifier_columns:
+            value = row.get(column, "")
+            if value:
+                sample = value
+                sample_column = column
+                break
+
         cluster = row.get("cluster", "")
         if not sample or not cluster:
             continue
@@ -174,6 +182,8 @@ def load_mirna_nmf_labels(path: Path) -> dict[str, dict[str, str]]:
         labels[sample] = {
             "miRNA_nmf_subtype": f"NMF_{cluster}",
             "miRNA_nmf_cluster": cluster,
+            "miRNA_nmf_input_identifier": sample,
+            "miRNA_nmf_input_identifier_column": sample_column,
         }
     return labels
 
