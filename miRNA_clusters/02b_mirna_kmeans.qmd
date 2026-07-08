@@ -1,0 +1,89 @@
+---
+title: "miRNA K-means Clustering"
+subtitle: "TCGA miRNA — k-means cross-check (Hildana, June 2026)"
+format: html
+editor: visual
+---
+
+## Goal
+
+Cluster the normalized miRNA matrix with k-means (k = 4) as a distance-based cross-check against NMF. Clusters are projected onto the PCA axes from `02_mirna_pca.qmd` for visualization. K-means shows no clear separation on PC1/PC2, which motivates using NMF as the final method.
+
+```{r}
+#| label: setup
+#| message: false
+library(tidyverse)
+
+project_root <- normalizePath(
+  if (basename(getwd()) == "miRNA_clusters") file.path(getwd(), "..") else getwd(),
+  mustWork = TRUE
+)
+mirna_data_dir <- file.path(project_root, "data", "mirna_data")
+mirna_plot_dir <- file.path(project_root, "miRNA_clusters", "mirna_plots")
+dir.create(mirna_plot_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+## Load hand-off matrix & PCA
+
+```{r}
+#| label: load
+mirna_lcpm <- readRDS(file.path(mirna_data_dir, "mirna_lcpm_matrix.rds"))   # miRNA x sample, normalized + log
+mirna_pca  <- readRDS(file.path(mirna_data_dir, "mirna_pca.rds"))           # from 02_mirna_pca.qmd
+mirna_sample_metadata <- readr::read_csv(
+  file.path(mirna_data_dir, "mirna_sample_metadata.csv"),
+  show_col_types = FALSE
+)
+```
+
+## Run k-means
+
+`kmeans` clusters the samples, so we transpose to samples x miRNA.
+
+```{r}
+#| label: kmeans
+set.seed(123)
+mirna_kmeans <- kmeans(t(mirna_lcpm), centers = 4, nstart = 25)
+
+table(mirna_kmeans$cluster)   # cluster sizes
+```
+
+## Visualize on PCA axes
+
+```{r}
+#| label: kmeans-plot
+mirna_kmeans_plot_df <- as.data.frame(mirna_pca$x)
+mirna_kmeans_plot_df$cluster <- factor(mirna_kmeans$cluster)
+
+ggsave(
+  file.path(mirna_plot_dir, "mirna_kmeans_pca_clusters.png"),
+  ggplot(mirna_kmeans_plot_df, aes(PC1, PC2, color = cluster)) +
+    geom_point(size = 3, alpha = 0.7) +
+    labs(x = "PC 1", y = "PC 2") +
+    theme_minimal() + theme(legend.position = "right"),
+  width = 8, height = 6, dpi = 300
+)
+```
+
+## Save cluster assignments
+
+```{r}
+#| label: save
+mirna_kmeans_df <- data.frame(
+  file_name = rownames(t(mirna_lcpm)),
+  cluster   = as.integer(mirna_kmeans$cluster)
+) |>
+  left_join(mirna_sample_metadata, by = "file_name") |>
+  relocate(
+    file_name,
+    file_id,
+    case_submitter_id,
+    case_id,
+    sample_submitter_id,
+    sample_type,
+    sample_type_code,
+    aliquot_barcode,
+    cluster
+  )
+write.csv(mirna_kmeans_df, file.path(mirna_data_dir, "mirna_kmeans_subtypes_k4.csv"), row.names = FALSE)
+```
+
