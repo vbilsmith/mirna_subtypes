@@ -7,7 +7,7 @@ editor: visual
 
 ## Goal
 
-Cluster the downloaded GDC miRNA samples into subtypes by NMF of their miRNA profiles. This file does the rank survey (2–8) that justifies the cluster count, then fits the final model at k = 4 and writes per-sample subtype assignments with GDC/clinical identifiers. The main **deliverable** file is `miRNA_clusters/mirna_nmf_subtypes_k4.csv`; a copy is also written to `data/mirna_data/mirna_nmf_subtypes_k4.csv`.
+Cluster the downloaded GDC miRNA samples into subtypes by NMF of their miRNA profiles. This file does the rank survey (2–8) that justifies the cluster count, then fits the final model at `nmf_k` clusters (set in the setup chunk) and writes per-sample subtype assignments with GDC/clinical identifiers. The main **deliverable** file is `miRNA_clusters/mirna_nmf_subtypes_k<nmf_k>.csv`; a copy is also written to `data/mirna_data/mirna_nmf_subtypes_k<nmf_k>.csv`.
 
 
 ```{r}
@@ -25,6 +25,12 @@ mirna_data_dir <- file.path(project_root, "data", "mirna_data")
 mirna_plot_dir <- file.path(project_root, "miRNA_clusters", "mirna_plots")
 mirna_cluster_dir <- file.path(project_root, "miRNA_clusters")
 dir.create(mirna_plot_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Cluster count for the final NMF fit. Set to 4 to reproduce the original
+# k=4 subtypes, 5 for k=5, etc. All output filenames below are suffixed with
+# this value (e.g. _k5), so different k never overwrite each other.
+nmf_k <- 5
+k_tag <- paste0("k", nmf_k)
 ```
 
 ## Load hand-off matrix
@@ -71,16 +77,16 @@ plot(mirna_nmf_estim)
 dev.off()
 ```
 
-## Final NMF (k = 4)
+## Final NMF (k = `r nmf_k`)
 
-k = 4 was chosen from the rank survey above (see thesis) and mirrors the 4 consensusOV ovarian subtypes. To explore another k, change `rank` and re-run the chunks below.
+k = 4 was chosen from the rank survey above (see thesis) and mirrors the 4 consensusOV ovarian subtypes. To explore another k, change `nmf_k` in the setup chunk and re-run the chunks below.
 
 ```{r}
 #| label: nmf-final
 set.seed(123)
-mirna_nmf_result <- nmf(mirna_nmf_input, rank = 4, method = "brunet",
+mirna_nmf_result <- nmf(mirna_nmf_input, rank = nmf_k, method = "brunet",
                         nrun = 50, .opt = "vp4")
-saveRDS(mirna_nmf_result, file.path(mirna_data_dir, "mirna_nmf_result_k4.rds"))
+saveRDS(mirna_nmf_result, file.path(mirna_data_dir, paste0("mirna_nmf_result_", k_tag, ".rds")))
 
 # NOTE: mirna_nmf_input is miRNA x sample, so predict() clusters the 497 samples.
 # To reproduce the original per-miRNA result instead, use t(mirna_nmf_input) here.
@@ -95,7 +101,7 @@ mirna_clusters  <- predict(mirna_nmf_result)
 mirna_ord       <- order(mirna_clusters)
 mirna_cons_sort <- mirna_cons[mirna_ord, mirna_ord]
 
-png(file.path(mirna_plot_dir, "mirna_consensus_nmf.png"), width = 1000, height = 900)
+png(file.path(mirna_plot_dir, paste0("mirna_consensus_nmf_", k_tag, ".png")), width = 1000, height = 900)
 image(
   x = seq_len(ncol(mirna_cons_sort)),
   y = seq_len(nrow(mirna_cons_sort)),
@@ -127,8 +133,8 @@ mirna_nmf_df   <- data.frame(
     aliquot_barcode,
     cluster
   )
-write.csv(mirna_nmf_df, file.path(mirna_cluster_dir, "mirna_nmf_subtypes_k4.csv"), row.names = FALSE)
-write.csv(mirna_nmf_df, file.path(mirna_data_dir, "mirna_nmf_subtypes_k4.csv"), row.names = FALSE)
+write.csv(mirna_nmf_df, file.path(mirna_cluster_dir, paste0("mirna_nmf_subtypes_", k_tag, ".csv")), row.names = FALSE)
+write.csv(mirna_nmf_df, file.path(mirna_data_dir, paste0("mirna_nmf_subtypes_", k_tag, ".csv")), row.names = FALSE)
 
 nrow(mirna_nmf_df)   
 ```
@@ -141,7 +147,7 @@ head(mirna_nmf_df)
 table(mirna_nmf_df$cluster)          
 
 mirna_sample_totals <- colSums(mirna_nmf_input)
-png(file.path(mirna_plot_dir, "mirna_counts_by_cluster.png"), width = 1000, height = 800, res = 120)
+png(file.path(mirna_plot_dir, paste0("mirna_counts_by_cluster_", k_tag, ".png")), width = 1000, height = 800, res = 120)
 boxplot(mirna_sample_totals ~ mirna_nmf_df$cluster,
         ylab = "total miRNA counts", xlab = "cluster")
 dev.off()
