@@ -72,7 +72,7 @@ mi <- labels |>
   transmute(case_submitter_id, mirna_cluster = factor(miRNA_nmf_cluster))
 
 # survival + clinical covariates per case
-df <- clin |>
+df_all <- clin |>
   filter(!is.na(case_submitter_id)) |>
   group_by(case_submitter_id) |> slice(1) |> ungroup() |>
   mutate(
@@ -100,10 +100,18 @@ df <- clin |>
     grade = factor(grade, levels = c("G1-2", "G3"))             # unordered
   ) |>
   select(case_submitter_id, time, event, age, stage, grade, mirna_cluster) |>
-  filter(!is.na(time), time >= 0, !is.na(event),
-         !is.na(age), !is.na(stage), !is.na(grade))
+  filter(!is.na(time), time >= 0, !is.na(event))
 
-cat("analysis n:", nrow(df), " events:", sum(df$event), "\n")
+# KM only needs survival time, event status, and miRNA cluster.
+df_km <- df_all |>
+  select(case_submitter_id, time, event, mirna_cluster)
+
+# Cox needs complete clinical covariates.
+df <- df_all |>
+  filter(!is.na(age), !is.na(stage), !is.na(grade))
+
+cat("KM analysis n:", nrow(df_km), " events:", sum(df_km$event), "\n")
+cat("Cox analysis n:", nrow(df), " events:", sum(df$event), "\n")
 table(df$mirna_cluster); table(df$stage); table(df$grade)
 ```
 
@@ -112,12 +120,12 @@ table(df$mirna_cluster); table(df$stage); table(df$grade)
 ```{r}
 #| fig-width: 8
 #| fig-height: 6
-km_fit <- survfit(Surv(time, event) ~ mirna_cluster, data = df)
-km_palette <- unname(poster_cluster_palette[levels(df$mirna_cluster)])
+km_fit <- survfit(Surv(time, event) ~ mirna_cluster, data = df_km)
+km_palette <- unname(poster_cluster_palette[levels(df_km$mirna_cluster)])
 
 km_plot <- ggsurvplot(
   km_fit,
-  data = df,
+  data = df_km,
   palette = km_palette,
   pval = TRUE,
   risk.table = TRUE,
@@ -128,7 +136,7 @@ km_plot <- ggsurvplot(
   xlab = "Days",
   ylab = "Overall survival probability",
   legend.title = "NMF cluster",
-  legend.labs = paste0("C", levels(df$mirna_cluster)),
+  legend.labs = paste0("C", levels(df_km$mirna_cluster)),
   ggtheme = poster_theme,
   tables.theme = theme_minimal(base_size = 10)
 )
