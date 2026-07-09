@@ -1,0 +1,158 @@
+---
+title: "miRNA vs mRNA subtype concordance (ARI)"
+format: html
+---
+
+Do the miRNA NMF clusters recapitulate the established mRNA subtypes? And does
+k=5 agree any better than k=4? This compares each miRNA clustering against all
+five mRNA subtyping methods using the **Adjusted Rand Index (ARI)**.
+
+ARI is the right metric here: it handles different cluster counts (k=4 vs k=5)
+and arbitrary integer labels, and it is **chance-corrected** (0 = agreement no
+better than random, 1 = identical partitions). Cramér's V is reported
+alongside, but note it is *not* chance-corrected — with n≈414 it can show a
+small "significant" association even when ARI says there is essentially no
+cluster-to-subtype mapping. **ARI is the headline.**
+
+## Setup
+
+```{r}
+#| message: false
+#| warning: false
+library(readr)
+library(dplyr)
+library(ggplot2)
+```
+
+## Concordance metrics
+
+```{r}
+# Adjusted Rand Index between two labelings of the same cases.
+ari <- function(a, b) {
+  tab <- table(a, b); n <- sum(tab)
+  sc  <- function(x) sum(choose(x, 2))
+  idx <- sum(choose(tab, 2)); ai <- rowSums(tab); bj <- colSums(tab)
+  expected <- sc(ai) * sc(bj) / choose(n, 2)
+  maxidx   <- 0.5 * (sc(ai) + sc(bj))
+  (idx - expected) / (maxidx - expected)
+}
+
+# Cramér's V (effect size for the contingency table); not chance-corrected.
+cramersV <- function(a, b) {
+  tab <- table(a, b)
+  chi <- suppressWarnings(chisq.test(tab)$statistic)
+  n <- sum(tab); k <- min(nrow(tab), ncol(tab))
+  sqrt(as.numeric(chi) / (n * (k - 1)))
+}
+```
+
+## Load data
+
+mRNA subtype calls (5 methods) come from the sample-level table; miRNA cluster
+labels come from the harmonized `labels` tables (k=4 and k=5 folders).
+
+```{r}
+methods <- c(consensusOV = "consensusOV_subtype", konecny = "konecny_subtype",
+             helland = "helland_subtype", verhaak = "verhaak_subtype",
+             bentink = "bentink_subtype")
+
+# one mRNA call per case (prefer primary tumor)
+mrna <- read.csv("mRNA_clusters/output/rna_subtypes_clinical_sample_level.csv") |>
+  filter(!is.na(case_submitter_id)) |>
+  mutate(pri = ifelse(suppressWarnings(as.integer(sample_type_code)) == 1L, 0L, 1L)) |>
+  arrange(case_submitter_id, pri) |>
+  group_by(case_submitter_id) |> slice(1) |> ungroup() |>
+  select(case_submitter_id, all_of(unname(methods)))
+
+# one miRNA cluster per case, for a given labels file
+mirna_k <- function(path) {
+  read_tsv(path, show_col_types = FALSE) |>
+    filter(has_miRNA, !is.na(miRNA_nmf_cluster)) |>
+    group_by(case_submitter_id) |> slice(1) |> ungroup() |>
+    transmute(case_submitter_id, cluster = as.character(miRNA_nmf_cluster))
+}
+mi4 <- mirna_k("data/gdc_tcga_ov_omics/harmonized_labels/omics_sample_assay_availability_labels.tsv")
+mi5 <- mirna_k("data/gdc_tcga_ov_omics/harmonized_labels_k5/omics_sample_assay_availability_labels.tsv")
+```
+
+## Score every method against a miRNA clustering
+
+```{r}
+score <- function(mi) {
+  do.call(rbind, lapply(names(methods), function(m) {
+    col <- methods[[m]]
+    d <- mrna |> select(case_submitter_id, sub = all_of(col)) |>
+      inner_join(mi, by = "case_submitter_id") |>
+      filter(!is.na(sub), sub != "")
+    data.frame(method = m, n = nrow(d),
+               ARI = round(ari(d$cluster, d$sub), 3),
+               CramersV = round(cramersV(d$cluster, d$sub), 3))
+  }))
+}
+
+k4 <- score(mi4)
+k5 <- score(mi5)
+```
+
+## Side-by-side comparison (k=4 vs k=5)
+
+```{r}
+data.frame(
+  method = k4$method,
+  ARI_k4 = k4$ARI, ARI_k5 = k5$ARI,
+  V_k4 = k4$CramersV, V_k5 = k5$CramersV
+)
+```
+
+## Concordance heatmap (k=5)
+
+Cross-tabulation of miRNA k=5 clusters (rows) against each mRNA method
+(columns). Cells are colored by **row percentage** (what fraction of each
+miRNA cluster falls in that mRNA subtype) so the big clusters don't dominate
+the scale; the number in each cell is the raw patient count. Concordance would
+show as a diagonal (each row lighting up one column) — its absence is the
+result.
+
+```{r}
+#| fig-width: 23
+#| fig-height: 4.5
+heat <- do.call(rbind, lapply(names(methods), function(m) {
+  col <- methods[[m]]
+  d <- mrna |> select(case_submitter_id, sub = all_of(col)) |>
+    inner_join(mi5, by = "case_submitter_id") |>
+    filter(!is.na(sub), sub != "")
+  a <- ari(d$cluster, d$sub)
+  d |> count(cluster, sub, name = "n") |>
+    group_by(cluster) |> mutate(pct = 100 * n / sum(n)) |> ungroup() |>
+    mutate(method = sprintf("%s (ARI=%.3f)", m, a))
+}))
+heat$cluster <- factor(heat$cluster, levels = rev(sort(unique(heat$cluster))))
+
+ggplot(heat, aes(sub, cluster, fill = pct)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = n), size = 3) +
+  facet_wrap(~ method, scales = "free_x", nrow = 1) +
+  scale_fill_gradient(low = "#F7F4F0", high = "#B94A48", name = "% of\nmiRNA\ncluster") +  # poster_mid -> poster_red
+  labs(x = "mRNA subtype", y = "miRNA NMF cluster (k=5)",
+       title = "miRNA (k=5) vs mRNA subtype concordance",
+       subtitle = "cell = row % within miRNA cluster; number = patient count") +
+  theme_minimal(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5, size = 8),
+        panel.spacing.x = unit(4, "lines"))
+```
+
+## Interpretation
+
+- **ARI ≈ 0 for every method, both k** → miRNA NMF clusters do not recapitulate
+  the mRNA subtypes; overlap is no better than chance.
+- **k=5 ≈ k=4** (differences ±0.01, i.e. noise) → the extra cluster buys no
+  additional alignment with mRNA structure.
+- **Verhaak is marginally highest** on both ARI and Cramér's V — consistent
+  with it being the one mRNA method with a KM signal — but the value is still
+  negligible.
+- **Bentink is at/below chance** because it has only 2 groups
+  (Angiogenic / non-Angiogenic), so ARI against a 4–5 cluster labeling is ~0.
+
+Taken with the survival results (weak KM separation, no independent Cox
+effect), the miRNA clustering appears to capture structure that is largely
+orthogonal to the established mRNA taxonomy rather than reproducing it.

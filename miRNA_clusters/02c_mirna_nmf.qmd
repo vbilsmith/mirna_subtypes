@@ -1,14 +1,13 @@
 ---
 title: "miRNA NMF Clustering"
-subtitle: "TCGA miRNA — NMF rank survey + final k=4 subtypes (Hildana, June 2026)"
+subtitle: "TCGA miRNA — NMF rank survey + final subtypes (Hildana, June 2026)"
 format: html
 editor: visual
 ---
 
 ## Goal
 
-Cluster the downloaded GDC miRNA samples into subtypes by NMF of their miRNA profiles. This file does the rank survey (2–8) that justifies the cluster count, then fits the final model at `nmf_k` clusters (set in the setup chunk) and writes per-sample subtype assignments with GDC/clinical identifiers. The main **deliverable** file is `miRNA_clusters/mirna_nmf_subtypes_k<nmf_k>.csv`; a copy is also written to `data/mirna_data/mirna_nmf_subtypes_k<nmf_k>.csv`.
-
+Cluster the downloaded GDC miRNA samples into subtypes by NMF of their miRNA profiles. This file does the rank survey (2–8) that justifies the cluster count, then fits the final model at `nmf_k` clusters (set in the setup chunk) and writes per-sample subtype assignments with GDC/clinical identifiers. The main **deliverable** file is `data/mirna_data/mirna_nmf_subtypes_k<nmf_k>.csv`.
 
 ```{r}
 #| label: setup
@@ -23,7 +22,6 @@ project_root <- normalizePath(
 )
 mirna_data_dir <- file.path(project_root, "data", "mirna_data")
 mirna_plot_dir <- file.path(project_root, "miRNA_clusters", "mirna_plots")
-mirna_cluster_dir <- file.path(project_root, "miRNA_clusters")
 dir.create(mirna_plot_dir, showWarnings = FALSE, recursive = TRUE)
 
 # Cluster count for the final NMF fit. Set to 4 to reproduce the original
@@ -31,6 +29,25 @@ dir.create(mirna_plot_dir, showWarnings = FALSE, recursive = TRUE)
 # this value (e.g. _k5), so different k never overwrite each other.
 nmf_k <- 5
 k_tag <- paste0("k", nmf_k)
+
+# Poster color system shared across NMF consensus, marker heatmaps, rank
+# survey, and survival curves.
+poster_blue <- "#6E8DBF"
+poster_mid <- "#F7F4F0"
+poster_red <- "#B94A48"
+poster_cluster_palette <- c(
+  "1" = "#4F6FA8",
+  "2" = "#7F9CCB",
+  "3" = "#7A7F87",
+  "4" = "#D1837D",
+  "5" = "#A83F4D"
+)
+poster_measure_palette <- c(
+  "Basis" = "#A83F4D",
+  "Best fit" = "#4F6FA8",
+  "Coefficients" = "#7A7F87",
+  "Consensus" = "#D1837D"
+)
 ```
 
 ## Load hand-off matrix
@@ -38,10 +55,12 @@ k_tag <- paste0("k", nmf_k)
 ```{r}
 #| label: load
 mirna_lcpm <- readRDS(file.path(mirna_data_dir, "mirna_lcpm_matrix.rds"))   # miRNA x sample
-mirna_sample_metadata <- readr::read_csv(
-  file.path(mirna_data_dir, "mirna_sample_metadata.csv"),
-  show_col_types = FALSE
-)
+mirna_sample_metadata_path <- file.path(mirna_data_dir, "mirna_sample_metadata.csv")
+mirna_sample_metadata <- if (file.exists(mirna_sample_metadata_path)) {
+  readr::read_csv(mirna_sample_metadata_path, show_col_types = FALSE)
+} else {
+  tibble(file_name = colnames(mirna_lcpm))
+}
 dim(mirna_lcpm)
 ```
 
@@ -73,7 +92,18 @@ if (file.exists(mirna_rank_survey_path)) {
 }
 
 png(file.path(mirna_plot_dir, "mirna_nmf_rank_survey.png"), width = 1000, height = 800, res = 120)
-plot(mirna_nmf_estim)
+mirna_rank_plot <- plot(mirna_nmf_estim)
+if (inherits(mirna_rank_plot, "ggplot")) {
+  mirna_rank_plot <- mirna_rank_plot +
+    scale_color_manual(values = poster_measure_palette) +
+    theme_minimal(base_size = 12) +
+    theme(
+      strip.background = element_rect(fill = "#E8E8E8", color = "grey35"),
+      panel.grid.minor = element_blank(),
+      plot.title = element_text(face = "bold")
+    )
+}
+print(mirna_rank_plot)
 dev.off()
 ```
 
@@ -100,15 +130,32 @@ mirna_cons      <- NMF::consensus(mirna_nmf_result)
 mirna_clusters  <- predict(mirna_nmf_result)
 mirna_ord       <- order(mirna_clusters)
 mirna_cons_sort <- mirna_cons[mirna_ord, mirna_ord]
+mirna_cluster_sizes <- table(mirna_clusters[mirna_ord])
+mirna_cluster_boundaries <- cumsum(as.numeric(mirna_cluster_sizes)) + 0.5
+mirna_cluster_midpoints <- cumsum(as.numeric(mirna_cluster_sizes)) -
+  as.numeric(mirna_cluster_sizes) / 2 + 0.5
+consensus_palette <- colorRampPalette(c(poster_blue, poster_mid, poster_red))(101)
 
 png(file.path(mirna_plot_dir, paste0("mirna_consensus_nmf_", k_tag, ".png")), width = 1000, height = 900)
+op <- par(mar = c(4, 4, 3, 1))
 image(
   x = seq_len(ncol(mirna_cons_sort)),
   y = seq_len(nrow(mirna_cons_sort)),
   z = t(mirna_cons_sort[nrow(mirna_cons_sort):1, ]),
-  axes = FALSE, xlab = "Samples", ylab = "Samples",
-  main = "Consensus NMF Clustering"
+  col = consensus_palette,
+  zlim = c(0, 1),
+  axes = FALSE, xlab = "NMF cluster", ylab = "Samples",
+  main = paste0("Consensus NMF Clustering (", k_tag, ")")
 )
+abline(v = mirna_cluster_boundaries[-length(mirna_cluster_boundaries)], col = "grey35", lwd = 0.8)
+abline(
+  h = nrow(mirna_cons_sort) - mirna_cluster_boundaries[-length(mirna_cluster_boundaries)] + 1,
+  col = "grey35",
+  lwd = 0.8
+)
+axis(1, at = mirna_cluster_midpoints, labels = paste0("C", names(mirna_cluster_sizes)), tick = FALSE)
+box()
+par(op)
 dev.off()
 ```
 
@@ -117,23 +164,29 @@ dev.off()
 ```{r}
 #| label: save
 mirna_clusters <- predict(mirna_nmf_result)
-mirna_nmf_df   <- data.frame(
-  file_name = names(mirna_clusters),
+mirna_nmf_df   <- tibble(
+  sample_id = names(mirna_clusters),
   cluster   = as.integer(mirna_clusters)
-) |>
-  left_join(mirna_sample_metadata, by = "file_name") |>
-  relocate(
-    file_name,
-    file_id,
-    case_submitter_id,
-    case_id,
-    sample_submitter_id,
-    sample_type,
-    sample_type_code,
-    aliquot_barcode,
-    cluster
-  )
-write.csv(mirna_nmf_df, file.path(mirna_cluster_dir, paste0("mirna_nmf_subtypes_", k_tag, ".csv")), row.names = FALSE)
+)
+
+if ("file_name" %in% names(mirna_sample_metadata)) {
+  mirna_nmf_df <- mirna_nmf_df |>
+    left_join(mirna_sample_metadata, by = c("sample_id" = "file_name")) |>
+    relocate(
+      sample_id,
+      any_of(c(
+        "file_id",
+        "case_submitter_id",
+        "case_id",
+        "sample_submitter_id",
+        "sample_type",
+        "sample_type_code",
+        "aliquot_barcode"
+      )),
+      cluster
+    )
+}
+
 write.csv(mirna_nmf_df, file.path(mirna_data_dir, paste0("mirna_nmf_subtypes_", k_tag, ".csv")), row.names = FALSE)
 
 nrow(mirna_nmf_df)   
@@ -151,4 +204,174 @@ png(file.path(mirna_plot_dir, paste0("mirna_counts_by_cluster_", k_tag, ".png"))
 boxplot(mirna_sample_totals ~ mirna_nmf_df$cluster,
         ylab = "total miRNA counts", xlab = "cluster")
 dev.off()
+```
+
+## Differential marker miRNAs
+
+Real subtypes should have cluster-specific markers. This one-vs-rest screen ranks each miRNA by its mean expression difference in one cluster versus all other clusters, then draws heatmaps from the top up-regulated markers per cluster.
+
+```{r}
+#| label: differential-markers
+#| warning: false
+top_markers_per_cluster <- 5
+
+marker_samples <- mirna_nmf_df |>
+  filter(sample_id %in% colnames(mirna_lcpm)) |>
+  mutate(cluster = factor(cluster, levels = sort(unique(cluster)))) |>
+  arrange(cluster, sample_id)
+
+marker_expr <- mirna_lcpm[, marker_samples$sample_id, drop = FALSE]
+cluster_levels <- levels(marker_samples$cluster)
+
+marker_stats <- purrr::map_dfr(cluster_levels, function(cl) {
+  in_cluster <- marker_samples$cluster == cl
+  p_values <- apply(marker_expr, 1, function(x) {
+    suppressWarnings(wilcox.test(x[in_cluster], x[!in_cluster])$p.value)
+  })
+
+  tibble(
+    cluster = as.integer(as.character(cl)),
+    miRNA = rownames(marker_expr),
+    mean_in_cluster = rowMeans(marker_expr[, in_cluster, drop = FALSE]),
+    mean_other_clusters = rowMeans(marker_expr[, !in_cluster, drop = FALSE]),
+    log2fc_vs_rest = mean_in_cluster - mean_other_clusters,
+    p_value = unname(p_values)
+  )
+}) |>
+  group_by(cluster) |>
+  mutate(fdr = p.adjust(p_value, method = "BH")) |>
+  ungroup() |>
+  arrange(cluster, desc(log2fc_vs_rest))
+
+top_markers <- marker_stats |>
+  filter(log2fc_vs_rest > 0) |>
+  group_by(cluster) |>
+  slice_max(order_by = log2fc_vs_rest, n = top_markers_per_cluster, with_ties = FALSE) |>
+  ungroup() |>
+  arrange(cluster, desc(log2fc_vs_rest))
+
+readr::write_csv(
+  marker_stats,
+  file.path(mirna_data_dir, paste0("mirna_differential_markers_", k_tag, ".csv"))
+)
+readr::write_csv(
+  top_markers,
+  file.path(mirna_data_dir, paste0("mirna_top_markers_", k_tag, ".csv"))
+)
+
+top_markers |>
+  select(cluster, miRNA, log2fc_vs_rest, fdr)
+```
+
+```{r}
+#| label: marker-heatmaps
+#| fig-width: 12
+#| fig-height: 7
+marker_ids <- unique(top_markers$miRNA)
+marker_z <- marker_expr[marker_ids, marker_samples$sample_id, drop = FALSE] |>
+  t() |>
+  scale() |>
+  t()
+marker_z[is.na(marker_z)] <- 0
+
+marker_order <- rev(unique(top_markers$miRNA))
+sample_order <- marker_samples |>
+  mutate(sample_index = row_number())
+sample_breaks <- sample_order |>
+  count(cluster, name = "n") |>
+  mutate(
+    boundary = cumsum(n) + 0.5,
+    midpoint = cumsum(n) - n / 2 + 0.5
+  )
+
+marker_heatmap_df <- as.data.frame(marker_z) |>
+  rownames_to_column("miRNA") |>
+  pivot_longer(-miRNA, names_to = "sample_id", values_to = "z") |>
+  left_join(sample_order |> select(sample_id, cluster, sample_index), by = "sample_id") |>
+  mutate(
+    miRNA = factor(miRNA, levels = marker_order),
+    z_clamped = pmax(pmin(z, 2.5), -2.5)
+  )
+
+sample_marker_heatmap <- ggplot(marker_heatmap_df, aes(sample_index, miRNA, fill = z_clamped)) +
+  geom_raster() +
+  geom_vline(
+    data = sample_breaks |> filter(row_number() < n()),
+    aes(xintercept = boundary),
+    inherit.aes = FALSE,
+    color = "grey45",
+    linewidth = 0.25
+  ) +
+  scale_x_continuous(
+    breaks = sample_breaks$midpoint,
+    labels = paste0("C", sample_breaks$cluster),
+    expand = c(0, 0)
+  ) +
+  scale_fill_gradient2(
+    low = poster_blue,
+    mid = poster_mid,
+    high = poster_red,
+    midpoint = 0,
+    limits = c(-2.5, 2.5),
+    name = "row z"
+  ) +
+  labs(
+    title = paste0("Top miRNA markers by NMF cluster (", k_tag, ")"),
+    subtitle = paste0("Top ", top_markers_per_cluster, " up-regulated miRNAs per cluster; samples ordered by cluster"),
+    x = "NMF cluster",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 8),
+    plot.title = element_text(face = "bold")
+  )
+
+ggsave(
+  file.path(mirna_plot_dir, paste0("mirna_marker_heatmap_", k_tag, ".png")),
+  sample_marker_heatmap,
+  width = 12,
+  height = 7,
+  dpi = 300
+)
+
+cluster_mean_heatmap_df <- marker_heatmap_df |>
+  group_by(miRNA, cluster) |>
+  summarize(mean_z = mean(z), .groups = "drop") |>
+  mutate(mean_z_clamped = pmax(pmin(mean_z, 2.5), -2.5))
+
+cluster_marker_heatmap <- ggplot(cluster_mean_heatmap_df, aes(cluster, miRNA, fill = mean_z_clamped)) +
+  geom_tile(color = "white", linewidth = 0.2) +
+  scale_fill_gradient2(
+    low = poster_blue,
+    mid = poster_mid,
+    high = poster_red,
+    midpoint = 0,
+    limits = c(-2.5, 2.5),
+    name = "mean row z"
+  ) +
+  labs(
+    title = paste0("Cluster-average expression of top miRNA markers (", k_tag, ")"),
+    x = "NMF cluster",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.y = element_text(size = 8),
+    plot.title = element_text(face = "bold")
+  )
+
+ggsave(
+  file.path(mirna_plot_dir, paste0("mirna_marker_cluster_mean_heatmap_", k_tag, ".png")),
+  cluster_marker_heatmap,
+  width = 6,
+  height = 7,
+  dpi = 300
+)
+
+sample_marker_heatmap
+cluster_marker_heatmap
 ```

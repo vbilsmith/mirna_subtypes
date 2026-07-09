@@ -37,10 +37,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mirna-subtype-file",
-        default="miRNA_clusters/mirna_nmf_subtypes_k4.csv",
+        default="data/mirna_data/mirna_nmf_subtypes_k5.csv",
         help=(
             "CSV containing miRNA NMF subtype assignments. Defaults to "
-            "miRNA_clusters/mirna_nmf_subtypes_k4.csv."
+            "data/mirna_data/mirna_nmf_subtypes_k5.csv."
         ),
     )
     parser.add_argument(
