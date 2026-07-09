@@ -1,0 +1,8 @@
+"case_submitter_id","n_samples","sample_types","consensusOV_calls","consensusOV_concordant","konecny_calls","konecny_concordant","helland_calls","helland_concordant","verhaak_calls","verhaak_concordant","bentink_calls","bentink_concordant","all_methods_concordant"
+"TCGA-13-0913",2,"01;02","DIF_consensus;IMR_consensus",FALSE,"C2_diffL;C1_immL",FALSE,"C5;C4",FALSE,"PRO;IMR",FALSE,"nonAngiogenic",TRUE,FALSE
+"TCGA-13-1489",2,"01;02","DIF_consensus",TRUE,"C2_diffL",TRUE,"C4",TRUE,"DIF;IMR",FALSE,"nonAngiogenic",TRUE,FALSE
+"TCGA-23-1023",2,"01;01","DIF_consensus;MES_consensus",FALSE,"C1_immL;C3_profL",FALSE,"C2;C1",FALSE,"DIF;PRO",FALSE,"nonAngiogenic;Angiogenic",FALSE,FALSE
+"TCGA-29-1705",2,"01;02","MES_consensus",TRUE,"C4_mescL",TRUE,"C1",TRUE,"MES",TRUE,"nonAngiogenic",TRUE,TRUE
+"TCGA-29-1770",2,"01;02","MES_consensus;DIF_consensus",FALSE,"C3_profL",TRUE,"C1;C4",FALSE,"MES;DIF",FALSE,"nonAngiogenic",TRUE,FALSE
+"TCGA-29-2414",2,"01;02","PRO_consensus;IMR_consensus",FALSE,"C3_profL;C1_immL",FALSE,"C5",TRUE,"PRO",TRUE,"nonAngiogenic",TRUE,FALSE
+"TCGA-61-2008",2,"01;02","DIF_consensus;IMR_consensus",FALSE,"C2_diffL;C1_immL",FALSE,"C5;C2",FALSE,"DIF;IMR",FALSE,"nonAngiogenic",TRUE,FALSE

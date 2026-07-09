@@ -1,0 +1,209 @@
+---
+title: "miRNA subtype survival — multivariable Cox"
+format: html
+---
+
+Does miRNA NMF subtype carry prognostic information **after** adjusting for
+the clinical variables we already know matter (stage, grade, age)? The
+log-rank test on the raw KM curves ignores those covariates; a multivariable
+Cox model asks whether cluster membership adds anything on top of them.
+
+The headline number is the **likelihood-ratio test** comparing a clinical-only
+model to one that also includes the subtype — one p-value for "does subtype
+add prognostic value?" — not the individual per-cluster p-values.
+
+## Setup
+
+```{r}
+#| message: false
+#| warning: false
+library(readr)
+library(dplyr)
+library(stringr)
+library(survival)
+library(survminer)
+library(ggplot2)
+
+poster_cluster_palette <- c(
+  "1" = "#4F6FA8",
+  "2" = "#7F9CCB",
+  "3" = "#7A7F87",
+  "4" = "#D1837D",
+  "5" = "#A83F4D"
+)
+poster_theme <- theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold"),
+    legend.position = "right"
+  )
+```
+
+## Load data
+
+Cluster labels come from the harmonized `labels` table (`miRNA_nmf_cluster`);
+survival + clinical covariates come from the sample-level subtype/clinical
+table. Point `labels_file` at the k5 folder to run the same analysis for k=5.
+
+```{r}
+labels_file <- "data/gdc_tcga_ov_omics/harmonized_labels_k5/omics_sample_assay_availability_labels.tsv"
+
+labels <- read_tsv(labels_file, show_col_types = FALSE)
+clin   <- read.csv("mRNA_clusters/output/rna_subtypes_clinical_sample_level.csv")
+```
+
+## Build the per-case analysis table
+
+Both inputs are sample-level, so we collapse to one row per case. Overall
+survival time is `days_to_death` for deceased patients and
+`days_to_last_follow_up` for living patients.
+
+`residual_disease` — normally a key HGSOC prognostic covariate — is
+**deliberately excluded**: in this GDC cart it is ~96% missing (only ~14 of
+414 cases have a value), so including it collapses the complete-case model to
+a dozen patients and it fails to converge. Stage and grade are collapsed
+because the cohort is overwhelmingly advanced / high-grade (little spread).
+
+```{r}
+# one miRNA cluster per case
+mi <- labels |>
+  filter(has_miRNA, !is.na(miRNA_nmf_cluster)) |>
+  group_by(case_submitter_id) |> slice(1) |> ungroup() |>
+  transmute(case_submitter_id, mirna_cluster = factor(miRNA_nmf_cluster))
+
+# survival + clinical covariates per case
+df_all <- clin |>
+  filter(!is.na(case_submitter_id)) |>
+  group_by(case_submitter_id) |> slice(1) |> ungroup() |>
+  mutate(
+    event = if_else(vital_status == "Dead", 1L, 0L),
+    time  = if_else(vital_status == "Dead",
+                    as.numeric(days_to_death),
+                    as.numeric(days_to_last_follow_up)),
+    age   = as.numeric(age_at_index),
+    stage_major = case_when(
+      str_detect(figo_stage, "IV")  ~ "IV",
+      str_detect(figo_stage, "III") ~ "III",
+      str_detect(figo_stage, "II")  ~ "II",
+      str_detect(figo_stage, "I")   ~ "I"),
+    stage = case_when(stage_major %in% c("I", "II") ~ "I-II",
+                      stage_major == "III"          ~ "III",
+                      stage_major == "IV"           ~ "IV"),
+    grade = case_when(tumor_grade == "G3"            ~ "G3",
+                      tumor_grade %in% c("G1", "G2") ~ "G1-2",
+                      TRUE                           ~ NA_character_)
+  ) |>
+  inner_join(mi, by = "case_submitter_id") |>
+  mutate(
+    mirna_cluster = relevel(factor(mirna_cluster), ref = "1"),  # reference cluster
+    stage = factor(stage, levels = c("I-II", "III", "IV")),     # unordered
+    grade = factor(grade, levels = c("G1-2", "G3"))             # unordered
+  ) |>
+  select(case_submitter_id, time, event, age, stage, grade, mirna_cluster) |>
+  filter(!is.na(time), time >= 0, !is.na(event))
+
+# KM only needs survival time, event status, and miRNA cluster.
+df_km <- df_all |>
+  select(case_submitter_id, time, event, mirna_cluster)
+
+# Cox needs complete clinical covariates.
+df <- df_all |>
+  filter(!is.na(age), !is.na(stage), !is.na(grade))
+
+cat("KM analysis n:", nrow(df_km), " events:", sum(df_km$event), "\n")
+cat("Cox analysis n:", nrow(df), " events:", sum(df$event), "\n")
+table(df$mirna_cluster); table(df$stage); table(df$grade)
+```
+
+## Kaplan-Meier curve
+
+```{r}
+#| fig-width: 8
+#| fig-height: 6
+km_fit <- survfit(Surv(time, event) ~ mirna_cluster, data = df_km)
+km_palette <- unname(poster_cluster_palette[levels(df_km$mirna_cluster)])
+
+km_plot <- ggsurvplot(
+  km_fit,
+  data = df_km,
+  palette = km_palette,
+  pval = TRUE,
+  risk.table = TRUE,
+  conf.int = FALSE,
+  censor.shape = "|",
+  censor.size = 2.5,
+  title = "Overall survival by miRNA NMF cluster (k5)",
+  xlab = "Days",
+  ylab = "Overall survival probability",
+  legend.title = "NMF cluster",
+  legend.labs = paste0("C", levels(df_km$mirna_cluster)),
+  ggtheme = poster_theme,
+  tables.theme = theme_minimal(base_size = 10)
+)
+
+png("miRNA_clusters/mirna_plots/mirna_km_survival_k5_poster.png", width = 1000, height = 850, res = 120)
+print(km_plot)
+dev.off()
+
+km_plot
+```
+
+## Nested Cox models + likelihood-ratio test
+
+```{r}
+fit_clin <- coxph(Surv(time, event) ~ stage + grade + age, data = df)
+fit_full <- coxph(Surv(time, event) ~ stage + grade + age + mirna_cluster, data = df)
+
+summary(fit_full)                 # per-term HR, 95% CI, p
+anova(fit_clin, fit_full)         # HEADLINE: does cluster add prognostic value?
+```
+
+## Proportional-hazards check
+
+```{r}
+cox.zph(fit_full)
+```
+
+Note that a PH violation in `age`/`grade` does not invalidate the miRNA
+conclusion: what matters is whether `mirna_cluster` violates PH and whether it
+is significant. If you need clean adjusted HRs for the clinical effects,
+stratify on the violating term (e.g. `+ strata(grade)`).
+
+## Forest plot
+
+Built by hand from the model's HR table — `survminer::ggforest()` is fragile
+across versions (throws "names do not match previous names" here), so this is
+the reliable equivalent.
+
+```{r}
+#| fig-width: 8
+#| fig-height: 5
+ci <- summary(fit_full)$conf.int
+cf <- summary(fit_full)$coefficients
+forest_tab <- data.frame(
+  term = rownames(ci),
+  HR   = ci[, "exp(coef)"],
+  lo   = ci[, "lower .95"],
+  hi   = ci[, "upper .95"],
+  p    = cf[, "Pr(>|z|)"]
+)
+
+ggplot(forest_tab, aes(x = HR, y = reorder(term, HR))) +
+  geom_vline(xintercept = 1, linetype = "dashed", colour = "grey50") +
+  geom_linerange(aes(xmin = lo, xmax = hi)) +
+  geom_point(size = 2) +
+  scale_x_log10() +
+  labs(x = "Hazard ratio (95% CI, log scale)", y = NULL,
+       title = "Multivariable Cox: miRNA subtype + stage/grade/age") +
+  theme_minimal()
+```
+
+## Interpretation
+
+- **LRT significant + `mirna_cluster` PH holds** → miRNA subtype is an
+  independent prognostic factor after adjustment.
+- **LRT not significant** → the null is robust; subtype adds nothing beyond
+  stage/grade/age. Report honestly alongside the KM — a legitimate result
+  consistent with HGSOC's clinically driven outcomes.
+- **`mirna_cluster` PH violated** → don't report a single HR for it; stratify,
+  add a time interaction, or use a time-restricted comparison.

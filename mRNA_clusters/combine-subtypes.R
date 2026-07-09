@@ -8,6 +8,7 @@ source("mRNA_clusters/harmonizationFunctions.R")
 # File locations
 metadata_file <- "data/tcga-ov-metadata/metadata.cohort.2025-06-23.json"
 clinical_file <- "data/clinical.cart.2025-04-08/clinical.tsv"
+follow_up_file <- "data/clinical.cart.2025-04-08/follow_up.tsv"
 output_dir <- "mRNA_clusters/output"
 
 metadata_raw <- fromJSON(metadata_file, simplifyVector = FALSE)
@@ -59,6 +60,33 @@ clinical <- read.delim(
   na.strings = c("'--", "--", "")
 )
 
+# `diagnoses.days_to_last_follow_up` (used below) is a diagnosis-level summary
+# field that GDC almost never populates, so living patients end up with no
+# last-contact time at all. The real last-contact times live in the separate
+# follow_up.tsv export (one row per follow-up visit, multiple visits per
+# case), under `follow_ups.days_to_follow_up`. Read it and take the latest
+# (max) visit per case so it can be combined with the diagnosis-level field.
+follow_up <- read.delim(
+  follow_up_file,
+  header = TRUE,
+  sep = "\t",
+  check.names = FALSE,
+  na.strings = c("'--", "--", "")
+)
+
+follow_up_visits <- follow_up |>
+  mutate(
+    days_to_follow_up = suppressWarnings(as.numeric(`follow_ups.days_to_follow_up`))
+  ) |>
+  group_by(`cases.case_id`, `cases.submitter_id`) |>
+  summarise(
+    days_to_last_follow_up_visit = {
+      visits <- days_to_follow_up[!is.na(days_to_follow_up)]
+      if (length(visits) == 0) NA_real_ else max(visits)
+    },
+    .groups = "drop"
+  )
+
 # Check that the clinical case IDs overlap between the RNA-Seq metadata and the
 # clinical data
 overlap <- intersect(rna_metadata$case_id, clinical$cases.case_id)
@@ -77,7 +105,9 @@ clinical_cases <- clinical |>
     clinical_rows = n(),
     vital_status = first_non_missing(`demographic.vital_status`),
     days_to_death = first_non_missing(`demographic.days_to_death`),
-    days_to_last_follow_up = first_non_missing(`diagnoses.days_to_last_follow_up`),
+    days_to_last_follow_up_diagnosis = suppressWarnings(
+      as.numeric(first_non_missing(`diagnoses.days_to_last_follow_up`))
+    ),
     age_at_index = first_non_missing(`demographic.age_at_index`),
     days_to_birth = first_non_missing(`demographic.days_to_birth`),
     figo_stage = first_non_missing(`diagnoses.figo_stage`),
@@ -88,7 +118,16 @@ clinical_cases <- clinical |>
     prior_malignancy = first_non_missing(`diagnoses.prior_malignancy`),
     prior_treatment = first_non_missing(`diagnoses.prior_treatment`),
     .groups = "drop"
-  )
+  ) |>
+  left_join(follow_up_visits, by = c("cases.case_id", "cases.submitter_id")) |>
+  mutate(
+    days_to_last_follow_up = suppressWarnings(ifelse(
+      is.na(days_to_last_follow_up_diagnosis) & is.na(days_to_last_follow_up_visit),
+      NA_real_,
+      pmax(days_to_last_follow_up_diagnosis, days_to_last_follow_up_visit, na.rm = TRUE)
+    ))
+  ) |>
+  select(-days_to_last_follow_up_diagnosis, -days_to_last_follow_up_visit)
 
 # Read in the subtypes we assigned with consensusOV
 subtype_files <- list(

@@ -98,15 +98,17 @@ data/mirna_data/mirna_lcpm_matrix.rds
 data/mirna_data/mirna_sample_metadata.csv
 ```
 
-The NMF notebook writes the miRNA subtype assignments to:
+The NMF notebook writes current miRNA NMF outputs to:
 
 ```text
-miRNA_clusters/mirna_nmf_subtypes_k4.csv
+data/mirna_data/mirna_nmf_subtypes_k5.csv
+data/mirna_data/mirna_differential_markers_k5.csv
+data/mirna_data/mirna_top_markers_k5.csv
 ```
 
-That CSV is the default miRNA subtype input for harmonization. It should contain
-one row per clustered miRNA file/sample and a `cluster` column; the current
-pipeline also carries through GDC identifiers such as `file_name`,
+The subtype CSV is the default miRNA subtype input for harmonization. It should
+contain one row per clustered miRNA file/sample and a `cluster` column; the
+current pipeline also carries through GDC identifiers such as `file_name`,
 `case_submitter_id`, `sample_submitter_id`, and `aliquot_barcode`.
 
 Older copies of this CSV may have a `sample_id` column that actually contains
@@ -125,10 +127,11 @@ python3 scripts/run_gdc_omics_pipeline.py --skip-pull --harmonize-labels --survi
 ```
 
 This harmonizes mRNA subtype labels and miRNA NMF subtype labels, then appends
-clinical/survival fields. By default, miRNA labels are read from:
+clinical/survival fields. By default, miRNA labels are read from the current
+k=5 NMF output:
 
 ```text
-miRNA_clusters/mirna_nmf_subtypes_k4.csv
+data/mirna_data/mirna_nmf_subtypes_k5.csv
 ```
 
 Use the harmonized outputs, not raw mRNA/miRNA file names, to compare assays:

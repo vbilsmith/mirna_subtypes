@@ -1,0 +1,111 @@
+---
+title: "mRNA subtype survival (Kaplan–Meier)"
+format: html
+---
+
+Kaplan–Meier overall-survival curves for each mRNA subtyping method
+(consensusOV, Konecny, Helland, Verhaak, Bentink). All subtype calls and
+the survival fields live in the same sample-level table, so no joins are
+needed — we just collapse to one row per case and derive overall survival.
+
+## Setup
+
+```{r}
+#| message: false
+#| warning: false
+library(readr)
+library(dplyr)
+library(survival)
+library(survminer)
+```
+
+## Load data
+
+```{r}
+mrna_clinical_cluster <- read.csv(
+  "mRNA_clusters/output/rna_subtypes_clinical_sample_level.csv"
+)
+```
+
+## Case-level survival
+
+The table is sample-level (a case can have more than one RNA aliquot), so we
+keep one row per case, preferring the primary-tumor sample (`sample_type_code`
+`01`). Overall survival time is `days_to_death` for deceased patients and
+`days_to_last_follow_up` (last-contact time) for living patients.
+
+```{r}
+methods <- c(
+  consensusOV = "consensusOV_subtype",
+  konecny     = "konecny_subtype",
+  helland     = "helland_subtype",
+  verhaak     = "verhaak_subtype",
+  bentink     = "bentink_subtype"
+)
+
+surv_df <- mrna_clinical_cluster |>
+  filter(!is.na(case_submitter_id)) |>
+  # prefer primary tumor (sample_type_code may load as "01" or 1)
+  mutate(is_primary = suppressWarnings(as.integer(sample_type_code)) == 1L) |>
+  arrange(case_submitter_id, desc(is_primary)) |>
+  group_by(case_submitter_id) |>
+  slice(1) |>
+  ungroup() |>
+  mutate(
+    os_event = if_else(vital_status == "Dead", 1L, 0L),
+    os_time  = if_else(vital_status == "Dead",
+                       as.numeric(days_to_death),
+                       as.numeric(days_to_last_follow_up))
+  ) |>
+  filter(!is.na(os_time), !is.na(os_event))
+
+cat("Cases with usable survival:", nrow(surv_df), "\n")
+cat("Events (deaths):", sum(surv_df$os_event), "\n")
+```
+
+## KM curves per subtyping method
+
+```{r}
+#| fig-width: 8
+#| fig-height: 7
+for (m in names(methods)) {
+  col <- methods[[m]]
+  d <- surv_df |> filter(!is.na(.data[[col]]))
+
+  # surv_fit() (survminer) stores the formula + data so ggsurvplot works
+  # correctly inside a loop.
+  fit <- surv_fit(
+    as.formula(paste0("Surv(os_time, os_event) ~ ", col)),
+    data = d
+  )
+
+  p <- ggsurvplot(
+    fit, data = d,
+    pval = TRUE, risk.table = TRUE, conf.int = FALSE,
+    title = paste0("mRNA subtype: ", m, " (n = ", nrow(d), ")"),
+    xlab = "Days", ylab = "Overall survival",
+    legend.title = m
+  )
+  print(p)
+}
+```
+
+## Log-rank summary
+
+```{r}
+logrank_p <- vapply(methods, function(col) {
+  d <- surv_df |> filter(!is.na(.data[[col]]))
+  sd <- survdiff(
+    as.formula(paste0("Surv(os_time, os_event) ~ ", col)),
+    data = d
+  )
+  pchisq(sd$chisq, length(sd$n) - 1, lower.tail = FALSE)
+}, numeric(1))
+
+tibble(
+  method    = names(methods),
+  n_groups  = vapply(methods, function(col) dplyr::n_distinct(surv_df[[col]], na.rm = TRUE), integer(1)),
+  logrank_p = signif(logrank_p, 3)
+) |>
+  arrange(logrank_p)
+```

@@ -1,0 +1,6 @@
+method,subtype_column,n_cases,n_events,n_groups,logrank_p,logrank_p_label,group_counts,plot_file
+Verhaak,verhaak_subtype,415,256,4,0.04653848802801096,0.047,DIF (n=127); IMR (n=111); MES (n=70); PRO (n=107),mRNA_clusters/mrna_plots/poster_mrna_km_survival_verhaak.png
+Konecny,konecny_subtype,415,256,4,0.20100997977551177,0.201,C1_immL (n=107); C2_diffL (n=141); C3_profL (n=85); C4_mescL (n=82),mRNA_clusters/mrna_plots/poster_mrna_km_survival_konecny.png
+consensusOV,consensusOV_subtype,415,256,4,0.2454168694974808,0.245,DIF_consensus (n=116); IMR_consensus (n=113); MES_consensus (n=92); PRO_consensus (n=94),mRNA_clusters/mrna_plots/poster_mrna_km_survival_consensusOV.png
+Helland,helland_subtype,415,256,4,0.4011942126907257,0.401,C1 (n=97); C2 (n=88); C4 (n=102); C5 (n=128),mRNA_clusters/mrna_plots/poster_mrna_km_survival_helland.png
+Bentink,bentink_subtype,415,256,2,0.6157809447742274,0.616,Angiogenic (n=51); nonAngiogenic (n=364),mRNA_clusters/mrna_plots/poster_mrna_km_survival_bentink.png

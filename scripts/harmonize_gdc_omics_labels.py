@@ -12,7 +12,7 @@ from typing import Any
 
 DEFAULT_GDC_DIR = "data/gdc_tcga_ov_omics"
 DEFAULT_MRNA_LABEL_DIR = "mRNA_clusters/output"
-DEFAULT_MIRNA_SUBTYPE_FILE = "miRNA_clusters/mirna_nmf_subtypes_k4.csv"
+DEFAULT_MIRNA_SUBTYPE_FILE = "data/mirna_data/mirna_nmf_subtypes_k5.csv"
 
 
 MRNA_SUBTYPE_FILES = {
@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_MIRNA_SUBTYPE_FILE,
         help=(
             "CSV containing miRNA NMF subtype assignments. Defaults to "
-            "miRNA_clusters/mirna_nmf_subtypes_k4.csv."
+            "data/mirna_data/mirna_nmf_subtypes_k5.csv."
         ),
     )
     parser.add_argument(
